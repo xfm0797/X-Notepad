@@ -29,9 +29,9 @@ export interface MarketIndex {
 
 /** 默认源，按优先级排列 */
 export const SOURCES = [
-  'https://cdn.jsdelivr.net/gh/xfm0797/x-notepad@main/market/index.json',
-  'https://raw.githubusercontent.com/xfm0797/x-notepad/main/market/index.json',
-  'https://gitee.com/xfm0797/x-notepad/raw/main/market/index.json'
+  'https://cdn.jsdelivr.net/gh/xfm0797/X-Notepad@main/market/index.json',
+  'https://raw.githubusercontent.com/xfm0797/X-Notepad/main/market/index.json',
+  'https://gitee.com/xfm0797/X-Notepad/raw/main/market/index.json'
 ]
 
 const STORE_KEY = 'xnp:marketUrl'

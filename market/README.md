@@ -2,9 +2,9 @@
 
 `index.json` 就是插件市场唯一的数据源，客户端按顺序试三个地址：
 
-1. `https://cdn.jsdelivr.net/gh/xfm0797/x-notepad@main/market/index.json`（快，但有 7 天 CDN 缓存，客户端会带 `_t` 时间戳绕过）
-2. `https://raw.githubusercontent.com/xfm0797/x-notepad/main/market/index.json`
-3. `https://gitee.com/xfm0797/x-notepad/raw/main/market/index.json`
+1. `https://cdn.jsdelivr.net/gh/xfm0797/X-Notepad@main/market/index.json`（快，但有 7 天 CDN 缓存，客户端会带 `_t` 时间戳绕过）
+2. `https://raw.githubusercontent.com/xfm0797/X-Notepad/main/market/index.json`
+3. `https://gitee.com/xfm0797/X-Notepad/raw/main/market/index.json`
 
 用户在「插件 → 插件市场 → 换源」里还能填自己的索引地址，填了就先试它。
 

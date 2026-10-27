@@ -4,7 +4,9 @@
   "version": "0.2.0",
   "type": "module",
   "description": "X-Notepad - 笔记 + 代码编辑器（Tauri 2 + CodeMirror 6 + WASM 插件）",
-  "authors": ["XFM <https://www.lovou.pw>"],
+  "authors": [
+    "XFM <https://www.lovou.pw>"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -38,5 +40,15 @@
     "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^5.9.0",
     "vite": "^8.3.5"
+  },
+  "author": "XFM",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xfm0797/X-Notepad.git"
+  },
+  "homepage": "https://github.com/xfm0797/X-Notepad#readme",
+  "bugs": {
+    "url": "https://github.com/xfm0797/X-Notepad/issues"
   }
 }

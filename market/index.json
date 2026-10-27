@@ -10,8 +10,8 @@
       "description": "把 CSV / TSV 渲染成对齐的文本表格（ABI v1 的最小示例）",
       "extensions": [".csv", ".tsv"],
       "abi": 1,
-      "url": "https://github.com/xfm0797/x-notepad/releases/latest/download/csv-viewer.zip",
-      "homepage": "https://github.com/xfm0797/x-notepad/tree/main/plugins/csv-viewer"
+      "url": "https://github.com/xfm0797/X-Notepad/releases/latest/download/csv-viewer.zip",
+      "homepage": "https://github.com/xfm0797/X-Notepad/tree/main/plugins/csv-viewer"
     }
   ]
 }
