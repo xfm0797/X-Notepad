@@ -168,20 +168,22 @@ impl PluginHost {
             ));
         }
 
-        #[cfg(feature = "wasm-plugins")]
-        {
-            let module = self.module_for(&wasm_path)?;
-            exec(&self.engine, &module, input)
-        }
+        self.exec_wasm(&wasm_path, input)
+    }
 
-        #[cfg(not(feature = "wasm-plugins"))]
-        {
-            let _ = wasm_path;
-            Err("当前构建未启用 WASM 插件（Cargo feature wasm-plugins 关闭）".to_string())
-        }
+    // 两个 cfg 版本的方法，而不是在 run() 里写两段 #[cfg] 的块表达式：
+    // 块表达式在语句位置不会自动变成函数尾表达式，cfg 掉一段后另一段就成了 `()`。
+    #[cfg(feature = "wasm-plugins")]
+    fn exec_wasm(&self, wasm_path: &std::path::Path, input: &str) -> Result<String, String> {
+        let module = self.module_for(wasm_path)?;
+        exec(&self.engine, &module, input)
+    }
+
+    #[cfg(not(feature = "wasm-plugins"))]
+    fn exec_wasm(&self, _wasm_path: &std::path::Path, _input: &str) -> Result<String, String> {
+        Err("当前构建未启用 WASM 插件（Cargo feature wasm-plugins 关闭）".to_string())
     }
 }
-
 /// 宿主向插件暴露的上下文（目前只收集日志）
 #[cfg(feature = "wasm-plugins")]
 #[derive(Default)]

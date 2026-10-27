@@ -33,5 +33,40 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run build
-      # 只做编译校验（不打包），首次跑就能暴露 Rust 侧的类型问题
-      - run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      # 只做编译校验（不打包），首次跑就能暴露 Rust 侧的类型问题。
+      # continue-on-error + 下面那步：把编译器报错写成 check-run 注解。
+      # 注解可以匿名读（`GET /repos/:o/:r/check-runs/:id/annotations`），
+      # 作业日志不行——本机没有 Rust 时这是唯一能看到具体错误的路子。
+      - name: cargo check
+        id: cargo
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tee cargo-check.log
+
+      - name: 失败时把报错写成注解
+        if: steps.cargo.outcome == 'failure'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+
+          lines = open('cargo-check.log', encoding='utf-8', errors='replace').read().splitlines()
+          keep, seen = [], set()
+          for i, l in enumerate(lines):
+              if re.match(r'^error(\[E\d+\])?:', l) or l.startswith('error: could not'):
+                  for j in range(i, min(i + 8, len(lines))):
+                      if j not in seen:
+                          seen.add(j)
+                          keep.append(lines[j])
+          body = '\n'.join(keep) if keep else '\n'.join(lines[-120:])
+          size = 2500
+          chunks = [body[i:i + size] for i in range(0, min(len(body), 20000), size)][:8]
+          esc = lambda s: s.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+          for n, c in enumerate(chunks, 1):
+              print(f"::error title=cargo check {n}/{len(chunks)}::{esc(c)}")
+          print(f"错误行 {len(keep)} 行 / 日志 {len(lines)} 行")
+          PY
+          exit 1
