@@ -1,0 +1,46 @@
+// X-Notepad 插件 ABI v1
+//
+// 说明：0.1.0 用的是「核心 wasm」ABI（见 ../docs/plugin-abi.md），
+// 下面这份 WIT 是 0.2.0 计划迁移到的 Component Model 目标形态，
+// 保留在这里是为了让 ABI 的语义一眼可见。
+
+interface types {
+  /// 插件元信息
+  record manifest {
+    id: string,
+    name: string,
+    version: string,
+    author: option<string>,
+    description: option<string>,
+    extensions: list<string>,
+  }
+
+  /// 宿主传给插件的请求
+  record request {
+    /// 文件绝对路径
+    path: string,
+    /// 文件正文（已按原编码解码成 UTF-8）
+    content: string,
+    /// 触发动作：parse / render / command
+    action: string,
+  }
+
+  record response {
+    ok: bool,
+    /// 成功时是 HTML 或 JSON
+    value: string,
+    /// 失败时是错误信息
+    error: option<string>,
+  }
+}
+
+world plugin {
+  /// 插件实现
+  export parse: func(req: request) -> response;
+  export render: func(payload: string) -> response;
+
+  /// 宿主提供
+  import log: func(level: u32, message: string);
+  import now-ms: func() -> u64;
+  import read-setting: func(key: string) -> option<string>;
+}

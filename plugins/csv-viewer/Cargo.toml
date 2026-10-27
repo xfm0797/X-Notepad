@@ -1,0 +1,11 @@
+[package]
+name = "csv-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+# 插件只依赖编译器自带的东西：没有 serde、没有 wasm-bindgen，
+# 说明"任何能编译到 wasm32 的语言都能写插件"不是空话。
+[dependencies]

@@ -1,0 +1,10 @@
+{
+  "id": "csv-viewer",
+  "name": "CSV 查看器",
+  "version": "0.1.0",
+  "author": "XFM",
+  "description": "把 CSV / TSV 渲染成 HTML 表格",
+  "abi": 1,
+  "entry": "plugin.wasm",
+  "extensions": [".csv", ".tsv"]
+}
