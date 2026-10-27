@@ -27,7 +27,7 @@ export function TabBar() {
               title="关闭"
               onClick={e => {
                 e.stopPropagation()
-                closeTab(path)
+                void closeTab(path)
               }}
             >
               {dirty ? '●' : '×'}

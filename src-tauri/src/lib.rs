@@ -6,16 +6,22 @@
 
 mod fsx;
 mod markdown;
+mod market;
 mod meta;
 mod plugins;
+mod watch;
 
 use std::sync::Mutex;
 use tauri::Manager;
 
-/// 全局状态：SQLite 连接 + WASM 插件宿主
+/// 全局状态：SQLite 连接 + WASM 插件宿主 + 文件监听器
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     pub plugins: plugins::PluginHost,
+    /// 当前工作区的 watcher；换目录时整个替换掉
+    pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// 用户插件目录（市场安装到这里）
+    pub plugin_dir: std::path::PathBuf,
 }
 
 pub fn run() {
@@ -40,7 +46,9 @@ pub fn run() {
 
             app.manage(AppState {
                 db: Mutex::new(conn),
-                plugins: plugins::PluginHost::new(plugin_dirs),
+                plugins: plugins::PluginHost::new(plugin_dirs.clone()),
+                watcher: Mutex::new(None),
+                plugin_dir: plugin_dirs[0].clone(),
             });
             Ok(())
         })
@@ -48,9 +56,11 @@ pub fn run() {
             fsx::ws_tree,
             fsx::file_read,
             fsx::file_write,
+            fsx::file_stat,
             fsx::file_create,
             fsx::file_rename,
             fsx::file_delete,
+            watch::watch_root,
             markdown::md_render,
             meta::meta_touch,
             meta::meta_recent,
@@ -58,6 +68,11 @@ pub fn run() {
             meta::meta_list_tags,
             plugins::plugin_list,
             plugins::plugin_run,
+            market::market_fetch,
+            market::plugin_install,
+            market::plugin_install_zip,
+            market::plugin_uninstall,
+            market::plugin_dir,
         ])
         .run(tauri::generate_context!())
         .expect("X-Notepad 启动失败");

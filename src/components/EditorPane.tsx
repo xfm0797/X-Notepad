@@ -128,6 +128,19 @@ export function EditorPane({ path }: Props) {
     view.dispatch({ effects: themeComp.reconfigure(theme === 'dark' ? oneDark : []) })
   }, [theme, themeComp])
 
+  // 内容被整体替换（重新载入磁盘内容 / 恢复草稿）时同步进编辑器。
+  // 用户自己打字时两边已经一致，这里不会有动作。
+  const content = doc?.content
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || content === undefined) return
+    const current = view.state.doc.toString()
+    if (current === content) return
+    view.dispatch({ changes: { from: 0, to: current.length, insert: content } })
+    statesRef.current.set(path, view.state)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, path])
+
   useEffect(() => {
     const view = viewRef.current
     if (!view) return

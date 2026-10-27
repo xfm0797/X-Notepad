@@ -1,6 +1,6 @@
 [package]
 name = "x-notepad"
-version = "0.1.0"
+version = "0.2.0"
 description = "X-Notepad - 笔记 + 代码编辑器"
 authors = ["XFM <https://www.lovou.pw>"]
 edition = "2021"
@@ -26,6 +26,11 @@ encoding_rs = "0.8"
 # 元数据（标签 / 收藏 / 最近打开）
 rusqlite = { version = "0.41", features = ["bundled"] }
 anyhow = "1"
+# 工作区文件监听（外部修改检测）
+notify = "8"
+# 插件市场：下载 zip（阻塞式，别把 tokio 运行时拖进同步命令）
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "gzip"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # WASM 插件沙箱。默认开启，可用 --no-default-features 关掉换取更快的编译
 wasmtime = { version = "50", optional = true }
 

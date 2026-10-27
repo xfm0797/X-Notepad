@@ -42,6 +42,15 @@ pub struct SaveResult {
     pub mtime: u64,
 }
 
+/// 只回 size/mtime，用于判断磁盘文件是否被外部改动
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileStat {
+    pub exists: bool,
+    pub size: u64,
+    pub mtime: u64,
+}
+
 /// 不参与遍历的重目录
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -239,6 +248,23 @@ pub fn file_write(path: String, content: String, encoding: String, eol: String) 
         size: meta.len(),
         mtime: mtime_secs(&meta),
     })
+}
+
+/// 文件状态。文件不存在也不报错，前端靠 exists 判断"被删了"
+#[tauri::command]
+pub fn file_stat(path: String) -> FileStat {
+    match std::fs::metadata(&path) {
+        Ok(meta) => FileStat {
+            exists: true,
+            size: meta.len(),
+            mtime: mtime_secs(&meta),
+        },
+        Err(_) => FileStat {
+            exists: false,
+            size: 0,
+            mtime: 0,
+        },
+    }
 }
 
 #[derive(Debug, Deserialize)]

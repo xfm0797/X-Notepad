@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-plugins
 src-tauri/target
 src-tauri/gen/schemas
 *.local
@@ -7,3 +8,9 @@ src-tauri/gen/schemas
 plugins/*/target
 plugins/*/*.wasm
 .workbuddy
+
+# 本地验证产物（vite 临时构建目录 + 冒烟脚本）
+.verify-dist
+.verify-app
+.verify-smoke
+.verify-src

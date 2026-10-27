@@ -5,6 +5,7 @@
  * 这里退回一份内存里的示例工作区，让 UI 可以独立调试。
  */
 import { invoke } from '@tauri-apps/api/core'
+import { baseName, joinPath, parentOf } from './path'
 
 export interface TreeNode {
   name: string
@@ -26,6 +27,12 @@ export interface FilePayload {
 }
 
 export interface SaveResult {
+  size: number
+  mtime: number
+}
+
+export interface FileStat {
+  exists: boolean
   size: number
   mtime: number
 }
@@ -127,7 +134,7 @@ wasmtime,rust,17000
 `
 }
 
-const demoTree: TreeNode[] = [
+let demoTree: TreeNode[] = [
   {
     name: 'src',
     path: `${DEMO_ROOT}/src`,
@@ -163,6 +170,40 @@ const demoTree: TreeNode[] = [
 ]
 
 const demoEdits: Record<string, string> = {}
+
+/* --- 演示模式下的增删改：直接动内存里的树，让 UI 能独立调试 --- */
+
+function demoChildrenOf(dir: string): TreeNode[] | null {
+  if (dir === DEMO_ROOT) return demoTree
+  const walk = (nodes: TreeNode[]): TreeNode | null => {
+    for (const n of nodes) {
+      if (n.path === dir) return n
+      const hit = n.children ? walk(n.children) : null
+      if (hit) return hit
+    }
+    return null
+  }
+  const node = walk(demoTree)
+  if (!node || !node.isDir) return null
+  if (!node.children) node.children = []
+  return node.children
+}
+
+function demoTake(path: string): TreeNode | null {
+  const parent = parentOf(path)
+  const list = demoChildrenOf(parent)
+  if (!list) return null
+  const idx = list.findIndex(n => n.path === path)
+  if (idx < 0) return null
+  return list.splice(idx, 1)[0]
+}
+
+function demoRepath(node: TreeNode, from: string, to: string) {
+  node.path = to
+  for (const child of node.children ?? []) {
+    demoRepath(child, child.path, `${to}${child.path.slice(from.length)}`)
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* 命令封装                                                             */
@@ -210,19 +251,82 @@ export async function writeFile(
 }
 
 export async function createEntry(path: string, kind: 'file' | 'dir'): Promise<void> {
-  if (!isTauri) return
-  await invoke('file_create', { path, kind })
+  if (!isTauri) {
+    const list = demoChildrenOf(parentOf(path))
+    if (!list) throw new Error('目录不存在')
+    if (list.some(n => n.path === path)) throw new Error('同名文件已存在')
+    const name = baseName(path)
+    list.push({
+      name,
+      path,
+      isDir: kind === 'dir',
+      size: 0,
+      ext: kind === 'dir' ? '' : (name.split('.').pop() ?? '').toLowerCase(),
+      children: kind === 'dir' ? [] : null
+    })
+    if (kind === 'file') demoFiles[path] = ''
+    return
+  }
+  await invoke('file_create', { path, kind: kind === 'dir' ? 'dir' : 'file' })
 }
 
 export async function renameEntry(from: string, to: string): Promise<void> {
-  if (!isTauri) return
+  if (!isTauri) {
+    const node = demoTake(from)
+    if (!node) throw new Error('源文件不存在')
+    demoRepath(node, from, to)
+    node.name = baseName(to)
+    demoChildrenOf(parentOf(to))?.push(node)
+    if (demoFiles[from] !== undefined) {
+      demoFiles[to] = demoFiles[from]
+      delete demoFiles[from]
+    }
+    if (demoEdits[from] !== undefined) {
+      demoEdits[to] = demoEdits[from]
+      delete demoEdits[from]
+    }
+    return
+  }
   await invoke('file_rename', { from, to })
 }
 
 export async function deleteEntry(path: string): Promise<void> {
-  if (!isTauri) return
+  if (!isTauri) {
+    demoTake(path)
+    delete demoFiles[path]
+    delete demoEdits[path]
+    return
+  }
   await invoke('file_delete', { path })
 }
+
+/** 复制一份路径到剪贴板（浏览器与桌面端都可用） */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 只取 size/mtime，用来判断磁盘上的文件有没有被外部改动 */
+export async function fileStat(path: string): Promise<FileStat> {
+  if (!isTauri) {
+    const content = demoEdits[path] ?? demoFiles[path]
+    if (content === undefined) return { exists: false, size: 0, mtime: 0 }
+    return { exists: true, size: new Blob([content]).size, mtime: Date.now() / 1000 }
+  }
+  return invoke<FileStat>('file_stat', { path })
+}
+
+/** 让 Rust 侧监听工作区变化；重复调用会切换监听目录 */
+export async function watchRoot(root: string): Promise<void> {
+  if (!isTauri) return
+  await invoke('watch_root', { root })
+}
+
+export { joinPath, parentOf, baseName }
 
 export async function renderMarkdown(markdown: string): Promise<string> {
   if (!isTauri) {
@@ -255,4 +359,53 @@ export async function listPlugins(): Promise<PluginInfo[]> {
 export async function runPlugin(id: string, input: unknown): Promise<string> {
   if (!isTauri) throw new Error('浏览器模式不支持 WASM 插件，请用 npm run tauri:dev')
   return invoke<string>('plugin_run', { id, input: JSON.stringify(input) })
+}
+
+/* ---------------- 插件市场 ---------------- */
+
+/** 拉市场索引文本：桌面端走 Rust（绕开 CORS），浏览器演示模式退回 fetch */
+export async function marketFetch(url: string): Promise<string> {
+  if (!isTauri) {
+    const res = await fetch(url, { cache: 'no-store' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.text()
+  }
+  return invoke<string>('market_fetch', { url })
+}
+
+export async function installPlugin(id: string, url: string): Promise<PluginInfo[]> {
+  if (!isTauri) throw new Error('浏览器模式不支持安装插件')
+  return invoke<PluginInfo[]>('plugin_install', { id, url })
+}
+
+export async function installPluginZip(path: string): Promise<PluginInfo[]> {
+  if (!isTauri) throw new Error('浏览器模式不支持安装插件')
+  return invoke<PluginInfo[]>('plugin_install_zip', { path })
+}
+
+export async function uninstallPlugin(id: string): Promise<PluginInfo[]> {
+  if (!isTauri) throw new Error('浏览器模式不支持卸载插件')
+  return invoke<PluginInfo[]>('plugin_uninstall', { id })
+}
+
+export async function pluginDir(): Promise<string> {
+  if (!isTauri) return '(浏览器演示模式没有插件目录)'
+  try {
+    return await invoke<string>('plugin_dir')
+  } catch {
+    return ''
+  }
+}
+
+/** 选一个 .zip 插件包 */
+export async function pickPluginZip(): Promise<string | null> {
+  if (!isTauri) return null
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    title: '选择插件包',
+    filters: [{ name: '插件包', extensions: ['zip'] }]
+  })
+  return typeof picked === 'string' ? picked : null
 }
