@@ -38,15 +38,25 @@ src-tauri/            Rust 后端
   src/markdown.rs     comrak GFM 渲染
   src/meta.rs         SQLite 元数据
   src/plugins.rs      wasmtime 宿主（feature = "wasm-plugins"）
+  src/watch.rs        notify 文件监听 → 前端事件
+  src/market.rs       插件市场：拉索引 / 下 zip / 解包安装
 src/                  React 前端
   lib/api.ts          invoke 封装 + 浏览器演示工作区
   lib/lang.ts         扩展名 → CodeMirror 语言
-  store/workspace.ts  标签页 / 文档 / 自动保存 / 主题
-  components/         Toolbar · FileTree · TabBar · EditorPane · PreviewPane · StatusBar · PluginsPanel
+  lib/path.ts         跨平台路径拼接 / 文件名校验
+  lib/drafts.ts       未保存草稿兜底（localStorage）
+  lib/watch.ts        文件监听事件订阅
+  lib/market.ts       插件市场索引（多源 + 破缓存）
+  store/workspace.ts  标签页 / 文档 / 自动保存 / 外部修改 / 草稿恢复
+  store/dialogs.ts    输入框 / 确认 / 多选一
+  components/         Toolbar · FileTree · TabBar · EditorPane · PreviewPane · StatusBar
+                      PluginsPanel（已安装 + 市场）· ExternalBanner · Dialogs
 plugins/csv-viewer/   示例插件（Rust cdylib → wasm32）
 wit/plugin.wit        ABI 的组件化目标形态（0.2.0）
 docs/plugin-abi.md    ABI v1 的具体约定
+market/index.json     插件市场索引（客户端按 jsDelivr → GitHub → Gitee 顺序找）
 scripts/gen-icon.py   图标生成（无第三方依赖）
+scripts/pack-plugin.ps1  把插件目录打成市场用 zip
 ```
 
 ## 开发
@@ -80,19 +90,41 @@ cd plugins/csv-viewer
 
 重启应用，工具栏「插件」里就能看到并直接对当前文件运行。
 
+## 日常操作
+
+| 想做的事 | 怎么做 |
+| --- | --- |
+| 新建文件 / 文件夹 | 文件树右键，或 `Ctrl+N` / `Ctrl+Shift+N`，或侧栏顶部 `＋` `▤` |
+| 重命名 / 删除 | 文件树右键（删除有二次确认） |
+| 保存 | `Ctrl+S` 立即保存，停手 1.2 秒也会自动保存 |
+| 关掉有改动的标签 | 会问「保存并关闭 / 不保存」 |
+| 找插件 | 工具栏「插件 → 插件市场」，也可以「本地安装」选一个 zip |
+
+### 外部修改与崩溃恢复
+
+- **外部修改**：工作区开着 `notify` 监听。别的程序（或同步盘）改了当前打开的文件时，
+  编辑器上方会出现提示条，让你选择「重新载入」还是「保留我的修改」——绝不悄悄覆盖。
+  自己保存触发的写入会被 1.5 秒的自写窗口过滤掉。
+- **崩溃恢复**：编辑时每 0.6 秒把缓冲区写一份到 localStorage（最多 3MB，超过丢最旧的）。
+  如果进程被强杀，下次启动会问要不要把这几篇未保存的内容捡回来。
+
 ## 路线图
 
-**0.1.0（当前）**
+**0.1.0（已完成）**
 - [x] 目录树、标签页、多语言语法高亮、查找替换、代码折叠
 - [x] Markdown 分屏预览（comrak + DOMPurify）
 - [x] 编码检测 / 换行符保持 / 原子写入 / 自动保存（1.2s 防抖）
 - [x] 亮暗主题、状态栏、最近打开（SQLite）
 - [x] WASM 插件宿主 + CSV 查看器示例
-- [ ] 新建 / 重命名 / 删除的 UI（Rust 命令已就绪，前端入口待补）
-- [ ] 外部修改检测（notify）、崩溃恢复
-- [ ] 命令面板、大纲、全文搜索
+- [x] 新建 / 重命名 / 删除（右键菜单 + 对话框，标签页同步改名）
+- [x] 外部修改检测（notify）、崩溃恢复
 
-**0.2.0**
+**0.2.0（当前）**
+- [x] 插件市场：`market/index.json` + 三源回退 + 时间戳破 CDN 缓存
+- [x] 安装 / 更新 / 卸载 / 本地 zip 安装（解包带 zip-slip 防护）
 - [ ] 插件 ABI 升级到 Component Model（`wit/plugin.wit`），保留 v1 兼容层
-- [ ] 插件市场（index.json + 双源，复用 X-Note 那套已验证方案）
 - [ ] 多窗口、会话恢复
+
+**之后**
+- [ ] 命令面板、大纲、全文搜索（SQLite FTS5）
+- [ ] 标签编辑、双链
