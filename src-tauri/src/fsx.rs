@@ -150,9 +150,12 @@ fn decode(bytes: &[u8]) -> (String, String) {
     if let Ok(s) = std::str::from_utf8(bytes) {
         return (s.to_string(), "UTF-8".to_string());
     }
-    let mut det = chardetng::EncodingDetector::new();
+    // chardetng 1.0 起这两项不再是 bool：new() 要 Iso2022JpDetection，
+    // guess() 要 Utf8Detection。文本编辑器两个都放开——
+    // 我们不是在按 HTML 规范解析网页，猜错也只是显示乱码，不会执行脚本。
+    let mut det = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
     det.feed(bytes, true);
-    let enc = det.guess(None, true);
+    let enc = det.guess(None, chardetng::Utf8Detection::Allow);
     let (text, _, _) = enc.decode(bytes);
     (text.to_string(), enc.name().to_string())
 }
