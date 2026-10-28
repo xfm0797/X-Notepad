@@ -166,6 +166,13 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
       },
       { id: 'reindex', group: '命令', label: '重建搜索索引', run: () => w.rebuildIndex() },
       {
+        id: 'graph',
+        group: '命令',
+        label: '知识图谱',
+        hint: 'Ctrl+Shift+G',
+        run: () => w.toggleGraph()
+      },
+      {
         id: 'copy-path',
         group: '命令',
         label: '复制当前文件路径',

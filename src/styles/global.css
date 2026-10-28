@@ -1589,3 +1589,277 @@ kbd {
   font-size: 10.5px;
   color: var(--text-dim);
 }
+
+/* ============ 知识图谱 ============ */
+.graph-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--bg);
+}
+
+.graph-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.graph-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.graph-sub {
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.graph-broken {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.graph-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.graph-input,
+.graph-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.graph-input {
+  width: 170px;
+}
+
+.graph-input:focus,
+.graph-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.chip {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.graph-canvas {
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  background: radial-gradient(circle at 50% 45%, var(--bg-alt), var(--bg) 70%);
+}
+
+.graph-svg {
+  display: block;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.graph-svg:active {
+  cursor: grabbing;
+}
+
+.gedge {
+  stroke: var(--border);
+  opacity: 0.9;
+  transition: opacity 0.12s;
+}
+
+.gedge.hot {
+  stroke: var(--accent);
+  opacity: 1;
+}
+
+.gedge.broken {
+  stroke-dasharray: 4 4;
+  opacity: 0.55;
+}
+
+.gedge.dim {
+  opacity: 0.12;
+}
+
+.gnode {
+  cursor: pointer;
+}
+
+.gnode circle {
+  fill: hsl(214 14% 62%);
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  transition: opacity 0.12s;
+}
+
+.gnode .glabel {
+  font-size: 10.5px;
+  fill: var(--text-dim);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.gnode.ghost circle {
+  fill: transparent;
+  stroke: hsl(214 12% 55%);
+  stroke-dasharray: 3 3;
+}
+
+.gnode.ghost .glabel {
+  fill: hsl(214 10% 55%);
+  font-style: italic;
+}
+
+.gnode.active circle {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.gnode.active .glabel {
+  fill: var(--accent);
+  font-weight: 600;
+}
+
+.gnode.hot .glabel {
+  fill: var(--text);
+}
+
+.gnode.dim {
+  opacity: 0.18;
+}
+
+/* 目录配色：同一个目录永远同一个色，亮暗主题都能看清 */
+.gnode.h0 circle,
+.legend-item.h0 i {
+  fill: hsl(214 78% 56%);
+  background: hsl(214 78% 56%);
+}
+.gnode.h1 circle,
+.legend-item.h1 i {
+  fill: hsl(160 62% 42%);
+  background: hsl(160 62% 42%);
+}
+.gnode.h2 circle,
+.legend-item.h2 i {
+  fill: hsl(275 62% 60%);
+  background: hsl(275 62% 60%);
+}
+.gnode.h3 circle,
+.legend-item.h3 i {
+  fill: hsl(28 82% 54%);
+  background: hsl(28 82% 54%);
+}
+.gnode.h4 circle,
+.legend-item.h4 i {
+  fill: hsl(340 70% 58%);
+  background: hsl(340 70% 58%);
+}
+.gnode.h5 circle,
+.legend-item.h5 i {
+  fill: hsl(190 72% 42%);
+  background: hsl(190 72% 42%);
+}
+.gnode.h6 circle,
+.legend-item.h6 i {
+  fill: hsl(95 52% 44%);
+  background: hsl(95 52% 44%);
+}
+.gnode.h7 circle,
+.legend-item.h7 i {
+  fill: hsl(245 58% 62%);
+  background: hsl(245 58% 62%);
+}
+
+.gnode.ghost circle {
+  fill: transparent;
+}
+
+.graph-legend {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 60%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.legend-item.ghost i {
+  background: transparent;
+  border: 1px dashed var(--text-dim);
+}
+
+.graph-hint {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.75;
+}
+
+.graph-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  pointer-events: none;
+}

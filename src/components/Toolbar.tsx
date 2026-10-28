@@ -17,6 +17,8 @@ export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette, onNewWind
   const toggleSide = useWorkspace(s => s.toggleSide)
   const toggleSearch = useWorkspace(s => s.toggleSearch)
   const searchOpen = useWorkspace(s => s.searchOpen)
+  const toggleGraph = useWorkspace(s => s.toggleGraph)
+  const graphOpen = useWorkspace(s => s.graphOpen)
   const preview = useWorkspace(s => s.preview)
   const wrap = useWorkspace(s => s.wrap)
   const side = useWorkspace(s => s.side)
@@ -91,6 +93,13 @@ export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette, onNewWind
           title="标签：读写 front-matter 里的 tags"
         >
           标签
+        </button>
+        <button
+          className={`btn${graphOpen ? ' on' : ''}`}
+          onClick={toggleGraph}
+          title="知识图谱 (Ctrl+Shift+G)：全库双链连成一张图"
+        >
+          图谱
         </button>
         <button className={`btn${wrap ? ' on' : ''}`} onClick={toggleWrap} title="自动换行">
           换行

@@ -55,6 +55,8 @@ interface WorkspaceState {
   /** 全库链接图（来自全文索引；当前文档的正文不在这里，用 activeNode() 覆盖） */
   graph: graphLib.Graph | null
   graphBusy: boolean
+  /** 知识图谱全屏浮层 */
+  graphOpen: boolean
   /** 标签面板里选中的标签，选中后只列带它的文件 */
   tagFocus: string | null
   /** 插入双链的选择器 */
@@ -81,6 +83,8 @@ interface WorkspaceState {
   /** 点同一个按钮就收起来 */
   toggleSide: (p: Exclude<SidePanel, 'none'>) => void
   refreshGraph: () => Promise<void>
+  /** 开关知识图谱；打开时顺手重扫一遍，免得看到的是旧图 */
+  toggleGraph: () => void
   setTagFocus: (t: string | null) => void
   /** 当前文档在图里的节点（正文用缓冲区内容，刚打的链接立刻生效） */
   activeNode: () => graphLib.GNode | null
@@ -366,6 +370,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
   message: '',
   graph: null,
   graphBusy: false,
+  graphOpen: false,
   tagFocus: null,
   linkPickerOpen: false,
   searchOpen: false,
@@ -1106,6 +1111,11 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
   /* ---------------- 双链与标签 ---------------- */
 
   setSide: (side) => set({ side }),
+  toggleGraph: () => {
+    const open = !get().graphOpen
+    set({ graphOpen: open })
+    if (open) void get().refreshGraph()
+  },
   toggleSide: (p) => set(s => ({ side: s.side === p ? 'none' : p })),
   setTagFocus: (tagFocus) => set({ tagFocus }),
   setLinkPicker: (linkPickerOpen) => set({ linkPickerOpen }),

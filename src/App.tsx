@@ -4,6 +4,7 @@ import { Dialogs } from './components/Dialogs'
 import { EditorPane } from './components/EditorPane'
 import { ExternalBanner } from './components/ExternalBanner'
 import { FileTree } from './components/FileTree'
+import { GraphView } from './components/GraphView'
 import { LinkPicker } from './components/LinkPicker'
 import { PluginsPanel } from './components/PluginsPanel'
 import { PreviewPane } from './components/PreviewPane'
@@ -50,12 +51,9 @@ function Welcome() {
           <b>[[想法]]</b> 写双链，工具栏「双链」看谁引用了我；「标签」读写 front-matter 里的 tags
         </li>
         <li>文件改名时会把全库的引用一起改掉，双链面板底部还能查断链</li>
-        <li>文件改名时会把全库的引用一起改掉，双链面板底部还能查断链</li>
         <li>
-          <b>[[想法]]</b> 写双链，工具栏「双链」看谁引用了我；「标签」读写 front-matter 里的 tags
+          <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> 打开知识图谱：谁连着谁、哪些笔记还没写，一眼看完
         </li>
-        <li>文件改名时会把全库的引用一起改掉，双链面板底部还能查断链</li>
-        <li>文件改名时会把全库的引用一起改掉，双链面板底部还能查断链</li>
         <li>文件树右键可以新建、重命名、删除；关了软件下次还回到这一页</li>
         <li>Markdown 分屏预览 + 大纲，代码文件自动切到纯编辑器</li>
       </ul>
@@ -72,6 +70,7 @@ export default function App() {
   const side = useWorkspace(s => s.side)
   const linkPickerOpen = useWorkspace(s => s.linkPickerOpen)
   const searchOpen = useWorkspace(s => s.searchOpen)
+  const graphOpen = useWorkspace(s => s.graphOpen)
   const openFolder = useWorkspace(s => s.openFolder)
 
   // 全局快捷键
@@ -84,6 +83,10 @@ export default function App() {
         // Ctrl+Shift+F：全文搜索（Ctrl+F 留给编辑器的查找）
         e.preventDefault()
         useWorkspace.getState().toggleSearch()
+      } else if (key === 'g' && e.shiftKey) {
+        // Ctrl+Shift+G：知识图谱
+        e.preventDefault()
+        useWorkspace.getState().toggleGraph()
       } else if (key === 'p') {
         // Ctrl+P / Ctrl+Shift+P 都开命令面板
         e.preventDefault()
@@ -218,6 +221,7 @@ export default function App() {
       </div>
       <StatusBar />
       {searchOpen && <SearchPanel />}
+      {graphOpen && <GraphView />}
       {linkPickerOpen && <LinkPicker />}
       {pluginsOpen && <PluginsPanel onClose={() => setPluginsOpen(false)} />}
       {paletteOpen && (
