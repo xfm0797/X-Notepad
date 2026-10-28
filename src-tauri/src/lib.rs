@@ -5,6 +5,7 @@
 //! - 插件跑在 wasmtime 沙箱里，只能通过宿主显式导出的函数与外界通信
 
 mod fsx;
+mod graph;
 mod markdown;
 mod market;
 mod meta;
@@ -83,8 +84,7 @@ pub fn run() {
             markdown::md_render,
             meta::meta_touch,
             meta::meta_recent,
-            meta::meta_set_tags,
-            meta::meta_list_tags,
+            graph::graph_scan,
             plugins::plugin_list,
             plugins::plugin_run,
             search::search_build,

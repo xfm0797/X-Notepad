@@ -1,7 +1,7 @@
 {
   "name": "x-notepad",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "X-Notepad - 笔记 + 代码编辑器（Tauri 2 + CodeMirror 6 + WASM 插件）",
   "authors": [

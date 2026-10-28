@@ -4,10 +4,11 @@ import { Dialogs } from './components/Dialogs'
 import { EditorPane } from './components/EditorPane'
 import { ExternalBanner } from './components/ExternalBanner'
 import { FileTree } from './components/FileTree'
-import { OutlinePanel } from './components/OutlinePanel'
+import { LinkPicker } from './components/LinkPicker'
 import { PluginsPanel } from './components/PluginsPanel'
 import { PreviewPane } from './components/PreviewPane'
 import { SearchPanel } from './components/SearchPanel'
+import { SidePanel } from './components/SidePanel'
 import { StatusBar } from './components/StatusBar'
 import { TabBar } from './components/TabBar'
 import { Toolbar } from './components/Toolbar'
@@ -45,6 +46,12 @@ function Welcome() {
         <li>
           <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>N</kbd> 新开窗口，两个窗口可以盯两个文件夹
         </li>
+        <li>
+          <b>[[想法]]</b> 写双链，工具栏「双链」看谁引用了我；「标签」读写 front-matter 里的 tags
+        </li>
+        <li>
+          <b>[[想法]]</b> 写双链，工具栏「双链」看谁引用了我；「标签」读写 front-matter 里的 tags
+        </li>
         <li>文件树右键可以新建、重命名、删除；关了软件下次还回到这一页</li>
         <li>Markdown 分屏预览 + 大纲，代码文件自动切到纯编辑器</li>
       </ul>
@@ -58,10 +65,10 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const doc = useWorkspace(s => (s.active ? s.docs[s.active] : undefined))
   const preview = useWorkspace(s => s.preview)
-  const outline = useWorkspace(s => s.outline)
+  const side = useWorkspace(s => s.side)
+  const linkPickerOpen = useWorkspace(s => s.linkPickerOpen)
   const searchOpen = useWorkspace(s => s.searchOpen)
   const openFolder = useWorkspace(s => s.openFolder)
-  const jumpTo = useWorkspace(s => s.jumpTo)
 
   // 全局快捷键
   useEffect(() => {
@@ -164,7 +171,7 @@ export default function App() {
         active: s.active,
         preview: s.preview,
         wrap: s.wrap,
-        outline: s.outline
+        side: s.side
       })
     })
     const flush = () => session.flushSession()
@@ -179,7 +186,7 @@ export default function App() {
 
   const ext = doc?.name.split('.').pop() ?? ''
   const showPreview = !!doc && preview && isMarkdown(ext)
-  const showOutline = !!doc && outline && isMarkdown(ext)
+  const showSide = !!doc && side !== 'none'
 
   return (
     <div className="app">
@@ -195,12 +202,10 @@ export default function App() {
           <TabBar />
           <ExternalBanner />
           {doc ? (
-            <div
-              className={`split${showPreview ? ' with-preview' : ''}${showOutline ? ' with-outline' : ''}`}
-            >
-              {showOutline && <OutlinePanel content={doc.content} onJump={pos => jumpTo(doc.path, pos)} />}
+            <div className={`split${showPreview ? ' with-preview' : ''}${showSide ? ' with-side' : ''}`}>
+              {showSide && <SidePanel path={doc.path} content={doc.content} />}
               <EditorPane path={doc.path} />
-              {showPreview && <PreviewPane content={doc.content} />}
+              {showPreview && <PreviewPane path={doc.path} content={doc.content} />}
             </div>
           ) : (
             <Welcome />
@@ -209,6 +214,7 @@ export default function App() {
       </div>
       <StatusBar />
       {searchOpen && <SearchPanel />}
+      {linkPickerOpen && <LinkPicker />}
       {pluginsOpen && <PluginsPanel onClose={() => setPluginsOpen(false)} />}
       {paletteOpen && (
         <CommandPalette

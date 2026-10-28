@@ -62,7 +62,7 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
   const tree = useWorkspace(s => s.tree)
   const active = useWorkspace(s => s.active)
   const theme = useWorkspace(s => s.theme)
-  const outline = useWorkspace(s => s.outline)
+  const side = useWorkspace(s => s.side)
 
   const files = useMemo(() => flattenFiles(tree), [tree])
 
@@ -104,8 +104,27 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
       {
         id: 'toggle-outline',
         group: '命令',
-        label: outline ? '隐藏大纲' : '显示大纲',
-        run: () => w.toggleOutline()
+        label: side === 'outline' ? '隐藏大纲' : '显示大纲',
+        run: () => w.toggleSide('outline')
+      },
+      {
+        id: 'toggle-backlinks',
+        group: '命令',
+        label: side === 'backlinks' ? '隐藏双链面板' : '显示双链面板',
+        run: () => w.toggleSide('backlinks')
+      },
+      {
+        id: 'toggle-tags',
+        group: '命令',
+        label: side === 'tags' ? '隐藏标签面板' : '显示标签面板',
+        run: () => w.toggleSide('tags')
+      },
+      {
+        id: 'insert-wiki',
+        group: '命令',
+        label: '插入双链',
+        hint: '[[笔记]]',
+        run: () => (w.active ? w.setLinkPicker(true) : undefined)
       },
       {
         id: 'toggle-theme',
@@ -154,7 +173,7 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
       }
     ]
     return list
-  }, [outline, theme, active, onOpenPlugins])
+  }, [side, theme, active, onOpenPlugins])
 
   const results = useMemo(() => {
     const q = query.trim()

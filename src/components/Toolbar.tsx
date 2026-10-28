@@ -14,12 +14,12 @@ export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette, onNewWind
   const saveAll = useWorkspace(s => s.saveAll)
   const togglePreview = useWorkspace(s => s.togglePreview)
   const toggleWrap = useWorkspace(s => s.toggleWrap)
-  const toggleOutline = useWorkspace(s => s.toggleOutline)
+  const toggleSide = useWorkspace(s => s.toggleSide)
   const toggleSearch = useWorkspace(s => s.toggleSearch)
   const searchOpen = useWorkspace(s => s.searchOpen)
   const preview = useWorkspace(s => s.preview)
   const wrap = useWorkspace(s => s.wrap)
-  const outline = useWorkspace(s => s.outline)
+  const side = useWorkspace(s => s.side)
   const theme = useWorkspace(s => s.theme)
   const setTheme = useWorkspace(s => s.setTheme)
   const active = useWorkspace(s => s.active)
@@ -69,12 +69,28 @@ export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette, onNewWind
           预览
         </button>
         <button
-          className={`btn${outline ? ' on' : ''}`}
+          className={`btn${side === 'outline' ? ' on' : ''}`}
           disabled={!isMd}
-          onClick={toggleOutline}
+          onClick={() => toggleSide('outline')}
           title="Markdown 大纲"
         >
           大纲
+        </button>
+        <button
+          className={`btn${side === 'backlinks' ? ' on' : ''}`}
+          disabled={!active}
+          onClick={() => toggleSide('backlinks')}
+          title="双链与反向链接：谁引用了我，我引用了谁"
+        >
+          双链
+        </button>
+        <button
+          className={`btn${side === 'tags' ? ' on' : ''}`}
+          disabled={!active}
+          onClick={() => toggleSide('tags')}
+          title="标签：读写 front-matter 里的 tags"
+        >
+          标签
         </button>
         <button className={`btn${wrap ? ' on' : ''}`} onClick={toggleWrap} title="自动换行">
           换行

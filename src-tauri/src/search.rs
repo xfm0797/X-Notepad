@@ -1023,8 +1023,13 @@ pub async fn search_replace(
 /// 单个文件重灌（保存、外部改动、改名之后调用）
 #[tauri::command]
 pub fn search_update(state: State<'_, AppState>, path: String, root: Option<String>) -> Result<(), String> {
-    let conn = state.search_db.lock().map_err(|e| e.to_string())?;
-    let p = PathBuf::from(&path);
+    update_path(&state.search_db, &path, root)
+}
+
+/// `search_update` 的内部版本：标签改写、批量替换之后也要用
+pub(crate) fn update_path(db: &Db, path: &str, root: Option<String>) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let p = PathBuf::from(path);
     let root = match root {
         Some(r) => r,
         None => read_meta(&conn, "root"),
@@ -1037,7 +1042,7 @@ pub fn search_update(state: State<'_, AppState>, path: String, root: Option<Stri
     } else if !p.exists() {
         // 文件被删掉了：把这一条摘掉。目录事件什么都不做——
         // 删除目录由前端显式调 search_remove，别在这里连坐整棵子树
-        drop_exact(&conn, &path)?;
+        drop_exact(&conn, path)?;
     }
     Ok(())
 }

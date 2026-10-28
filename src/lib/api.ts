@@ -59,9 +59,13 @@ export const isTauri =
 const DEMO_ROOT = '/demo'
 
 const demoFiles: Record<string, string> = {
-  [`${DEMO_ROOT}/README.md`]: `# X-Notepad
+  [`${DEMO_ROOT}/README.md`]: `---
+tags: [入门, 产品]
+---
 
-笔记 + 代码编辑器，一个窗口解决。
+# X-Notepad
+
+笔记 + 代码编辑器，一个窗口解决。相关笔记：[[想法]]、[[索引]]
 
 ## 为什么是这套技术栈
 
@@ -76,6 +80,7 @@ const demoFiles: Record<string, string> = {
 - [x] 打开一篇 Markdown，右侧预览
 - [x] 打开源码文件，语法高亮
 - [ ] 用 \`Ctrl + F\` 查找
+- [ ] 点预览里的 [[想法]]：双链直接跳过去，左边「反链」会列出谁引用了我
 
 > 代码块、表格、任务列表、删除线都是 GFM 标准。
 
@@ -119,13 +124,32 @@ export function Panel({ title, onClose }: Props) {
   )
 }
 `,
-  [`${DEMO_ROOT}/notes/想法.md`]: `# 想法池
+  [`${DEMO_ROOT}/notes/想法.md`]: `---
+tags: [想法, 产品]
+---
+
+# 想法池
 
 1. 命令面板（Ctrl+Shift+P）
 2. 全文替换（正则）
 3. 大纲跳转
 
 外部修改文件时要有提示，不能悄悄覆盖。
+
+写到一半的念头可以挂在 [[索引]] 里，别让它散在各处。 #灵感
+`,
+  [`${DEMO_ROOT}/notes/索引.md`]: `---
+title: 索引
+tags: [索引]
+---
+
+# 索引
+
+- [[README]] —— 项目说明
+- [[想法|产品想法]] —— 还没落地的点子
+- [[还没写]] —— 故意留一个未解析的链接
+
+> 未解析的链接在「反链」面板里是虚线，点一下就能新建。
 `,
   [`${DEMO_ROOT}/data/sample.csv`]: `name,lang,stars
 tauri,rust,92000
@@ -152,7 +176,8 @@ let demoTree: TreeNode[] = [
     size: 0,
     ext: '',
     children: [
-      { name: '想法.md', path: `${DEMO_ROOT}/notes/想法.md`, isDir: false, size: 96, ext: 'md' }
+      { name: '索引.md', path: `${DEMO_ROOT}/notes/索引.md`, isDir: false, size: 220, ext: 'md' },
+      { name: '想法.md', path: `${DEMO_ROOT}/notes/想法.md`, isDir: false, size: 200, ext: 'md' }
     ]
   },
   {
@@ -336,6 +361,20 @@ export async function renderMarkdown(markdown: string): Promise<string> {
     return DOMPurify.sanitize(await marked.parse(markdown))
   }
   return invoke<string>('md_render', { markdown })
+}
+
+/** 图节点：后端已经从全文索引里解析好链接和标签 */
+export interface GraphNodePayload {
+  path: string
+  name: string
+  title: string
+  tags: string[]
+  links: Array<{ target: string; label: string; kind: 'wiki' | 'md'; line: number }>
+}
+
+/** 扫一遍全文索引，拿到链接图 + 标签（桌面端专用；演示模式见 lib/graph.ts） */
+export async function graphScan(root: string): Promise<{ nodes: GraphNodePayload[]; took: number }> {
+  return invoke('graph_scan', { root })
 }
 
 export async function touchRecent(path: string, title: string): Promise<void> {

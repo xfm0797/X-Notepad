@@ -2,6 +2,9 @@
 //!
 //! 正文永远留在文件里，这里只存"文件的附加信息"，
 //! 所以即使 db 丢了笔记也不受影响，重新打开会自动重建条目。
+//!
+//! 标签**不在这里**：0.6.0 起以文件 front-matter 里的 `tags` 为准（见 `graph.rs`），
+//! 这样笔记换台机器、进 git 都还带着标签。
 
 use crate::AppState;
 use rusqlite::{params, Connection};
@@ -17,13 +20,6 @@ pub struct Recent {
     pub favorite: bool,
     pub opened_at: i64,
     pub opened_count: i64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TagCount {
-    pub tag: String,
-    pub count: i64,
 }
 
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
@@ -95,47 +91,4 @@ pub fn meta_recent(state: State<'_, AppState>, limit: Option<i64>) -> Result<Vec
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn meta_set_tags(state: State<'_, AppState>, path: String, tags: Vec<String>) -> Result<(), String> {
-    let joined = tags
-        .iter()
-        .map(|t| t.trim())
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join(",");
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        r#"INSERT INTO files (path, tags, opened_at) VALUES (?1, ?2, ?3)
-           ON CONFLICT(path) DO UPDATE SET tags = excluded.tags"#,
-        params![path, joined, now_secs()],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// 全部标签及其出现次数（用于标签面板）
-#[tauri::command]
-pub fn meta_list_tags(state: State<'_, AppState>) -> Result<Vec<TagCount>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT tags FROM files WHERE tags <> ''")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-
-    let mut counter: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for tags in rows.flatten() {
-        for tag in split_tags(&tags) {
-            *counter.entry(tag).or_insert(0) += 1;
-        }
-    }
-    let mut out: Vec<TagCount> = counter
-        .into_iter()
-        .map(|(tag, count)| TagCount { tag, count })
-        .collect();
-    out.sort_by(|a, b| b.count.cmp(&a.count).then(a.tag.cmp(&b.tag)));
-    Ok(out)
 }

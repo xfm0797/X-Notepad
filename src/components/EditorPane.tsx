@@ -164,6 +164,21 @@ export function EditorPane({ path }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jump])
 
+  // 选中一个笔记后要往光标处插 `[[名字]]`（插入双链）
+  const insert = useWorkspace(s => s.insert)
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || !insert || insert.path !== path) return
+    const at = view.state.selection.main
+    view.dispatch({
+      changes: { from: at.from, to: at.to, insert: insert.text },
+      selection: { anchor: at.from + insert.text.length },
+      scrollIntoView: true
+    })
+    view.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insert])
+
   if (doc?.binary) {
     return <div className="pane-empty">这是一份二进制文件，0.1.0 暂不支持预览与编辑。</div>
   }

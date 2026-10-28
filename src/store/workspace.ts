@@ -1,8 +1,11 @@
 import { create } from 'zustand'
 import * as api from '../lib/api'
 import * as drafts from '../lib/drafts'
+import * as graphLib from '../lib/graph'
+import * as links from '../lib/links'
 import * as search from '../lib/search'
 import * as session from '../lib/session'
+import * as tags from '../lib/tags'
 import { baseName, isUnder, joinPath, parentOf, validateName } from '../lib/path'
 import { ask, choose, confirm } from './dialogs'
 import { isMarkdown } from '../lib/lang'
@@ -26,6 +29,9 @@ export interface Doc {
 
 type Theme = 'dark' | 'light'
 
+/** 编辑器左边那块信息栏显示什么 */
+export type SidePanel = 'none' | 'outline' | 'backlinks' | 'tags'
+
 interface WorkspaceState {
   root: string | null
   tree: api.TreeNode[]
@@ -34,13 +40,58 @@ interface WorkspaceState {
   active: string | null
   preview: boolean
   wrap: boolean
-  /** Markdown 大纲面板 */
-  outline: boolean
+  /** 左侧信息栏：大纲 / 双链 / 标签 */
+  side: SidePanel
   /** 一次性跳转指令：非空时编辑器把选区挪过去 */
   jump: { path: string; pos: number; nonce: number } | null
+  /** 一次性插入指令：编辑器把 text 插到光标处 */
+  insert: { path: string; text: string; nonce: number } | null
   theme: Theme
   busy: boolean
   message: string
+
+  /* 双链与标签 */
+  /** 全库链接图（来自全文索引；当前文档的正文不在这里，用 activeNode() 覆盖） */
+  graph: graphLib.Graph | null
+  graphBusy: boolean
+  /** 标签面板里选中的标签，选中后只列带它的文件 */
+  tagFocus: string | null
+  /** 插入双链的选择器 */
+  linkPickerOpen: boolean
+
+  openFolder: () => Promise<void>
+  refreshTree: () => Promise<void>
+  openFile: (path: string) => Promise<void>
+  activate: (path: string) => void
+  closeTab: (path: string) => Promise<void>
+  edit: (path: string, content: string) => void
+  save: (path?: string) => Promise<boolean>
+  saveAll: () => Promise<void>
+  togglePreview: () => void
+  toggleWrap: () => void
+  toggleOutline: () => void
+  jumpTo: (path: string, pos: number) => void
+  setTheme: (t: Theme) => void
+  setMessage: (m: string) => void
+  isDirty: (path: string) => boolean
+
+  /* 双链与标签 */
+  setSide: (p: SidePanel) => void
+  /** 点同一个按钮就收起来 */
+  toggleSide: (p: Exclude<SidePanel, 'none'>) => void
+  refreshGraph: () => Promise<void>
+  setTagFocus: (t: string | null) => void
+  /** 当前文档在图里的节点（正文用缓冲区内容，刚打的链接立刻生效） */
+  activeNode: () => graphLib.GNode | null
+  addTagToActive: (tag: string) => Promise<void>
+  removeTagFromActive: (tag: string) => Promise<void>
+  /** 打开双链；未解析时问要不要新建 */
+  openWiki: (target: string, kind: links.LinkKind, fromPath: string, line?: number) => Promise<void>
+  /** 跳到某篇笔记的某一行（反链面板用） */
+  openAt: (path: string, line: number) => Promise<void>
+  setLinkPicker: (open: boolean) => void
+  /** 把 `[[名字]]` 插到当前光标处 */
+  insertWiki: (target: string) => void
 
   /* 全文搜索 */
   searchOpen: boolean
@@ -58,22 +109,6 @@ interface WorkspaceState {
   searchError: string
   indexStatus: search.IndexStatus | null
   indexing: boolean
-
-  openFolder: () => Promise<void>
-  refreshTree: () => Promise<void>
-  openFile: (path: string) => Promise<void>
-  activate: (path: string) => void
-  closeTab: (path: string) => Promise<void>
-  edit: (path: string, content: string) => void
-  save: (path?: string) => Promise<boolean>
-  saveAll: () => Promise<void>
-  togglePreview: () => void
-  toggleWrap: () => void
-  toggleOutline: () => void
-  jumpTo: (path: string, pos: number) => void
-  setTheme: (t: Theme) => void
-  setMessage: (m: string) => void
-  isDirty: (path: string) => boolean
 
   /* 全文搜索 */
   toggleSearch: () => void
@@ -127,6 +162,59 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined
 /** 请求序号：慢的那个回来时不能覆盖新结果 */
 let searchSeq = 0
 
+/** 链接图扫描序号：连着触发几次，只认最后一次 */
+let graphSeq = 0
+/** 链接图刷新防抖（保存、改名之后攒一下再扫） */
+let graphTimer: ReturnType<typeof setTimeout> | undefined
+
+function queueGraph(delay = 600) {
+  if (graphTimer) clearTimeout(graphTimer)
+  graphTimer = setTimeout(() => {
+    graphTimer = undefined
+    void useWorkspace.getState().refreshGraph()
+  }, delay)
+}
+
+/**
+ * 标签改动落盘。
+ * 有未保存的正文时只改缓冲区——直接写盘会把用户刚打的字冲掉，
+ * 交给 1.2 秒的自动保存把「正文 + 标签」一起写下去。
+ */
+async function commitTags(path: string, next: string) {
+  const state = useWorkspace.getState()
+  const doc = state.docs[path]
+  if (!doc) return
+  if (doc.content !== doc.savedContent) {
+    state.edit(path, next)
+    useWorkspace.setState({ message: '标签改写已进缓冲区，随这次保存一起落盘' })
+    return
+  }
+  try {
+    lastWrite.set(path, Date.now())
+    const res = await api.writeFile(path, next, doc.encoding, doc.eol)
+    useWorkspace.setState(s => ({
+      docs: {
+        ...s.docs,
+        [path]: {
+          ...s.docs[path],
+          content: next,
+          savedContent: next,
+          size: res.size,
+          mtime: res.mtime,
+          external: false,
+          gone: false
+        }
+      },
+      message: '标签已更新'
+    }))
+    drafts.drop(path)
+    void search.updateIndex(path, useWorkspace.getState().root ?? undefined).catch(() => {})
+    queueGraph(400)
+  } catch (e) {
+    useWorkspace.setState({ message: `写标签失败：${String(e).replace(/^Error:\s*/, '')}` })
+  }
+}
+
 const AUTOSAVE_DELAY = 1200
 const STASH_DELAY = 600
 const SELF_WRITE_WINDOW = 1500
@@ -163,11 +251,16 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
   active: null,
   preview: true,
   wrap: true,
-  outline: false,
+  side: 'none',
   jump: null,
+  insert: null,
   theme: storedTheme(),
   busy: false,
   message: '',
+  graph: null,
+  graphBusy: false,
+  tagFocus: null,
+  linkPickerOpen: false,
   searchOpen: false,
   searchQuery: '',
   searchCase: false,
@@ -364,7 +457,10 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       }))
       drafts.drop(target)
       // 存完顺手把这篇重新灌进全文索引（失败不影响保存本身）
-      void search.updateIndex(target, get().root ?? undefined).catch(() => {})
+      void search
+        .updateIndex(target, get().root ?? undefined)
+        .then(() => queueGraph())
+        .catch(() => {})
       return true
     } catch (e) {
       set({ message: `保存失败：${String(e).replace(/^Error:\s*/, '')}` })
@@ -441,6 +537,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       void search
         .removeIndex(path)
         .then(() => search.updateIndex(to, get().root ?? undefined))
+        .then(() => queueGraph())
         .catch(() => {})
     }
     return to
@@ -482,7 +579,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     drafts.dropTree(path)
     session.dropCursorTree(path)
     await get().refreshTree()
-    void search.removeIndex(path).catch(() => {})
+    void search.removeIndex(path).then(() => queueGraph()).catch(() => {})
     return true
   },
 
@@ -597,7 +694,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       active: saved.active && tabs.includes(saved.active) ? saved.active : tabs[tabs.length - 1] ?? null,
       preview: saved.preview,
       wrap: saved.wrap,
-      outline: saved.outline,
+      side: saved.side,
       message: restored ? `已恢复上次的 ${restored} 个标签` : ''
     })
     void get().rebuildIndex(true)
@@ -794,6 +891,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
         /* 读不回来就算了，下次打开会重新读 */
       }
     }
+    if (paths.length) queueGraph(300)
   },
 
   runSearch: async () => {
@@ -840,6 +938,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
         ...(silent ? {} : { message: `已索引 ${report.files} 个文件（${report.ms ?? 0} ms）` })
       })
       if (get().searchQuery.trim()) void get().runSearch()
+      queueGraph(0)
     } catch (e) {
       set({
         indexing: false,
@@ -864,9 +963,106 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     get().jumpTo(hit.path, search.offsetOf(content, hit.line, hit.column))
   },
 
+  /* ---------------- 双链与标签 ---------------- */
+
+  setSide: (side) => set({ side }),
+  toggleSide: (p) => set(s => ({ side: s.side === p ? 'none' : p })),
+  setTagFocus: (tagFocus) => set({ tagFocus }),
+  setLinkPicker: (linkPickerOpen) => set({ linkPickerOpen }),
+
+  refreshGraph: async () => {
+    const root = get().root
+    if (!root) {
+      set({ graph: null })
+      return
+    }
+    const seq = ++graphSeq
+    set({ graphBusy: true })
+    try {
+      const g = await graphLib.scan(root)
+      if (seq !== graphSeq) return
+      set({ graph: g, graphBusy: false })
+    } catch (e) {
+      if (seq !== graphSeq) return
+      set({
+        graphBusy: false,
+        message: `链接图扫描失败：${String(e).replace(/^Error:\s*/, '')}`
+      })
+    }
+  },
+
+  activeNode: () => {
+    const path = get().active
+    const doc = path ? get().docs[path] : undefined
+    return path && doc ? graphLib.nodeOf(path, doc.content) : null
+  },
+
+  addTagToActive: async (tag) => {
+    const path = get().active
+    const doc = path ? get().docs[path] : undefined
+    if (!path || !doc) return
+    const next = tags.setTags(doc.content, [...tags.frontMatterTags(doc.content), tag])
+    if (next === doc.content) return
+    await commitTags(path, next)
+  },
+
+  removeTagFromActive: async (tag) => {
+    const path = get().active
+    const doc = path ? get().docs[path] : undefined
+    if (!path || !doc) return
+    const want = tag.toLowerCase()
+    const kept = tags.frontMatterTags(doc.content).filter(t => t.toLowerCase() !== want)
+    const next = tags.setTags(doc.content, kept)
+    if (next === doc.content) return
+    await commitTags(path, next)
+    if (get().tagFocus?.toLowerCase() === want) set({ tagFocus: null })
+  },
+
+  openWiki: async (target, kind, fromPath, line) => {
+    const notes = (get().graph?.nodes ?? []).map(n => ({ path: n.path, title: n.title }))
+    const active = get().activeNode()
+    if (active && !notes.some(n => n.path === active.path)) {
+      notes.push({ path: active.path, title: active.title })
+    }
+
+    const hit = links.resolveLink(target, kind, fromPath, notes)
+    if (hit) {
+      await get().openFile(hit)
+      const content = get().docs[hit]?.content ?? ''
+      get().jumpTo(hit, line ? search.offsetOf(content, line, 0) : 0)
+      return
+    }
+
+    // 未解析：问一句再新建，别在别人文档旁边乱放文件
+    const name = `${baseName(links.normalizeTarget(target)) || links.noteName(target)}.md`
+    const dir = parentOf(fromPath)
+    const okay = await confirm({
+      title: '这篇笔记还不存在',
+      message: `要新建 ${name} 吗？\n\n位置：${dir}`,
+      confirmText: '新建'
+    })
+    if (!okay) return
+    await get().newEntry(dir, name, 'file')
+  },
+
+  openAt: async (path, line) => {
+    await get().openFile(path)
+    const content = get().docs[path]?.content ?? ''
+    get().jumpTo(path, search.offsetOf(content, line, 0))
+  },
+
+  insertWiki: (target) => {
+    const path = get().active
+    if (!path) return
+    set(s => ({
+      insert: { path, text: links.wikiText(target), nonce: (s.insert?.nonce ?? 0) + 1 },
+      linkPickerOpen: false
+    }))
+  },
+
   togglePreview: () => set((s) => ({ preview: !s.preview })),
   toggleWrap: () => set((s) => ({ wrap: !s.wrap })),
-  toggleOutline: () => set((s) => ({ outline: !s.outline })),
+  toggleOutline: () => set((s) => ({ side: s.side === 'outline' ? 'none' : 'outline' })),
   // nonce 是为了让"同一个位置跳两次"也能触发编辑器的 effect
   jumpTo: (path, pos) => set((s) => ({ jump: { path, pos, nonce: (s.jump?.nonce ?? 0) + 1 } })),
   setTheme: (theme) => {

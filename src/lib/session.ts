@@ -41,10 +41,15 @@ export interface SessionState {
   active: string | null
   preview: boolean
   wrap: boolean
-  outline: boolean
+  /** 左侧信息栏：none / outline / backlinks / tags（0.6.0 取代了原来的 outline 布尔） */
+  side: SidePanel
   /** path → 光标 offset */
   cursors: Record<string, number>
 }
+
+export type SidePanel = 'none' | 'outline' | 'backlinks' | 'tags'
+
+const SIDES: SidePanel[] = ['none', 'outline', 'backlinks', 'tags']
 
 const EMPTY: SessionState = {
   root: null,
@@ -52,7 +57,7 @@ const EMPTY: SessionState = {
   active: null,
   preview: true,
   wrap: true,
-  outline: false,
+  side: 'none',
   cursors: {}
 }
 
@@ -66,14 +71,19 @@ function load(): void {
   try {
     const raw = localStorage.getItem(key())
     if (!raw) return
-    const parsed = JSON.parse(raw) as Partial<SessionState>
+    const parsed = JSON.parse(raw) as Partial<SessionState> & { outline?: boolean }
     memory = {
       root: typeof parsed.root === 'string' ? parsed.root : null,
       tabs: Array.isArray(parsed.tabs) ? parsed.tabs.filter(t => typeof t === 'string').slice(0, MAX_TABS) : [],
       active: typeof parsed.active === 'string' ? parsed.active : null,
       preview: parsed.preview !== false,
       wrap: parsed.wrap !== false,
-      outline: parsed.outline === true,
+      // 老版本只存了 outline 布尔，升级上来时映射成对应面板
+      side: SIDES.includes(parsed.side as SidePanel)
+        ? (parsed.side as SidePanel)
+        : parsed.outline === true
+          ? 'outline'
+          : 'none',
       cursors:
         parsed.cursors && typeof parsed.cursors === 'object'
           ? Object.fromEntries(
