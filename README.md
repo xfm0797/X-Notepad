@@ -9,6 +9,7 @@
 > 0.4.0 上全文搜索：SQLite FTS5 索引 + 中文按字切分，`Ctrl+Shift+F` 直接搜正文。
 > 0.5.0 搜索结果按目录分组，加正则查找与全库替换，支持多窗口。
 > 0.6.0 补上双链与反向链接，标签写进 front-matter（面板可增删，跟着文件走）。
+> 0.7.0 改名时自动改掉全库引用，双链面板底部能一次看清所有断链。
 
 ## 为什么是这套栈
 
@@ -47,7 +48,6 @@ src-tauri/            Rust 后端
   src/market.rs       插件市场：拉索引 / 下 zip / 解包安装
   src/search.rs       全文索引：FTS5 / 中文切分 / 命中摘要
   src/graph.rs        双链与标签：从索引正文里扫 [[链接]] 与 #标签
-  src/graph.rs        双链与标签：从索引正文里扫 [[链接]] 与 #标签
 src/                  React 前端
   lib/api.ts          invoke 封装 + 浏览器演示工作区
   lib/lang.ts         扩展名 → CodeMirror 语言
@@ -60,17 +60,14 @@ src/                  React 前端
   lib/search.ts       全文搜索封装（桌面端 invoke / 浏览器内存扫描）
   lib/links.ts        双链解析 / 目标解析 / 预览锚点替换
   lib/tags.ts         front-matter 与 #标签 的读写
-  lib/graph.ts        链接图 / 反链 / 标签索引（桌面端索引 / 演示模式内存扫描）
-  lib/links.ts        双链解析 / 目标解析 / 预览锚点替换
-  lib/tags.ts         front-matter 与 #标签 的读写
-  lib/graph.ts        链接图 / 反链 / 标签索引（桌面端索引 / 演示模式内存扫描）
+  lib/graph.ts        链接图 / 反链 / 断链体检 / 标签索引
+  lib/refactor.ts     改名时把引用一起改掉（算方案 + 应用）
   store/workspace.ts  标签页 / 文档 / 自动保存 / 外部修改 / 草稿与会话恢复
   store/dialogs.ts    输入框 / 确认 / 多选一
   components/         Toolbar · FileTree · TabBar · EditorPane · PreviewPane · StatusBar
                       PluginsPanel（已安装 + 市场）· ExternalBanner · Dialogs
                       CommandPalette（命令 + 文件搜索）· OutlinePanel（Markdown 大纲）
                       SearchPanel（全文搜索结果 + 索引状态）
-                      SidePanel（大纲 / 双链 / 标签）· LinkPicker（插入双链）
                       SidePanel（大纲 / 双链 / 标签）· LinkPicker（插入双链）
 plugins/csv-viewer/   示例插件（Rust cdylib → wasm32）
 wit/plugin.wit        ABI 的组件化目标形态（0.2.0）
@@ -183,6 +180,16 @@ cd plugins/csv-viewer
 - 图从全文索引的正文里扫（不重复读磁盘），几百篇毫秒级；**当前打开的那篇用缓冲区内容**，
   刚敲下的 `[[新笔记]]` 立刻出现在面板里，不用等保存。
 
+链子会不会断，是双链体系能不能长期用下去的关键，所以补了两处：
+
+- **改名自动改引用**：把 `想法.md` 改成 `笔记.md` 时，先扫出全库指向它的链接，
+  弹一次「有 N 个文件共 M 处链接指向想法，一起改吗？」——选「一起改」就把
+  `[[想法]]`→`[[笔记]]`、`[[想法|我的想法]]`→`[[笔记|我的想法]]`（别名是作者写的，不动）、
+  `[文字](notes/想法.md)` 都换掉，目录前缀和 `#小节` 锚点原样保留。选「只改名」就只动文件名。
+  方案在**改名之前**算：改完名 `[[旧名]]` 就解析不到任何文件了。
+- **断链体检**：双链面板底部常驻「断链 N」，点 ＋ 展开列出全库指不到文件的链接
+  （文件名 + 行号），点一条跳到出处那一行去修。删文件、改错名字留下的坑，一次就能看全。
+
 标签有两个来源：front-matter 的 `tags`（`[a, b]`、`a, b`、`- a` 三种写法都认）和正文里的 `#标签`。
 
 - 面板里增删的是 **front-matter**，正文的 `#标签` 只读（那属于原文，要删去正文删），界面上用虚线框区分。
@@ -227,11 +234,15 @@ cd plugins/csv-viewer
 - [x] 正则查找（不走 FTS5，直接扫正文）+ 全库替换：`dryRun` 先报数量、保留编码与换行、跳过脏文件
 - [x] 多窗口：`Ctrl+Alt+N` 新窗口，监听与会话按窗口隔离，「在新窗口打开当前文件」
 
-**0.6.0（当前）**
+**0.6.0**
 - [x] 双链：`[[笔记]]` / `[[笔记|别名]]` / 本地 `.md` 链接，跳过代码块
 - [x] 反向链接面板：谁引用了我（带行号跳转）、出链（未解析可一键新建）
 - [x] 预览里的双链可点，走 `#xnp-wiki:` 锚点，不动 comrak 的 HTML 转义策略
 - [x] 标签：front-matter `tags` + 正文 `#标签`，面板增删写回 front-matter（保留编码换行）
+
+**0.7.0（当前）**
+- [x] 改名时同步更新全库引用：先 dry-run 报「N 个文件 M 处」，选一起改才动；别名 / 目录 / 锚点都保留
+- [x] 断链体检：双链面板底部常驻全库断链清单，点一条跳到出处行
 - [ ] 插件 ABI 升级到 Component Model（`wit/plugin.wit`），保留 v1 兼容层
 
 **之后**
