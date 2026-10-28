@@ -160,7 +160,7 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, String) {
     (text.to_string(), enc.name().to_string())
 }
 
-fn encode(text: &str, encoding: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn encode(text: &str, encoding: &str) -> Result<Vec<u8>, String> {
     if encoding.eq_ignore_ascii_case("utf-8") {
         return Ok(text.as_bytes().to_vec());
     }
@@ -175,7 +175,7 @@ fn encode(text: &str, encoding: &str) -> Result<Vec<u8>, String> {
     Ok(bytes.into_owned())
 }
 
-fn eol_of(text: &str) -> &'static str {
+pub(crate) fn eol_of(text: &str) -> &'static str {
     if text.contains("\r\n") {
         "CRLF"
     } else {
@@ -184,11 +184,11 @@ fn eol_of(text: &str) -> &'static str {
 }
 
 /// 统一成 LF，写入时再按目标换行符还原
-fn normalize_eol(text: &str) -> String {
+pub(crate) fn normalize_eol(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
-fn apply_eol(text: &str, eol: &str) -> String {
+pub(crate) fn apply_eol(text: &str, eol: &str) -> String {
     let lf = normalize_eol(text);
     if eol.eq_ignore_ascii_case("crlf") {
         lf.replace('\n', "\r\n")
@@ -229,28 +229,56 @@ pub fn file_read(path: String) -> Result<FilePayload, String> {
     })
 }
 
-#[tauri::command]
-pub fn file_write(path: String, content: String, encoding: String, eol: String) -> Result<SaveResult, String> {
-    let p = PathBuf::from(&path);
-    if let Some(parent) = p.parent() {
+/// 按编码 + 换行符落盘（先写临时文件再原子替换）。
+///
+/// `file_write` 和全库替换共用这一条路径，保证「读进来什么样、存回去还什么样」。
+pub(crate) fn write_text(
+    path: &Path,
+    content: &str,
+    encoding: &str,
+    eol: &str,
+) -> Result<SaveResult, String> {
+    if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
     }
-    let bytes = encode(&apply_eol(&content, &eol), &encoding)?;
+    let bytes = encode(&apply_eol(content, eol), encoding)?;
     // 先写临时文件再原子替换：避免崩溃时留下半个文件
-    let tmp = p.with_extension(format!(
+    let tmp = path.with_extension(format!(
         "{}.tmp",
-        p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
+        path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
     ));
     std::fs::write(&tmp, &bytes).map_err(|e| format!("写入失败：{e}"))?;
-    std::fs::rename(&tmp, &p).map_err(|e| {
+    std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("保存失败：{e}")
     })?;
-    let meta = std::fs::metadata(&p).map_err(|e| format!("保存后校验失败：{e}"))?;
+    let meta = std::fs::metadata(path).map_err(|e| format!("保存后校验失败：{e}"))?;
     Ok(SaveResult {
         size: meta.len(),
         mtime: mtime_secs(&meta),
     })
+}
+
+/// 读成「LF 文本 + 编码 + 原换行符」，读不了（目录 / 太大 / 二进制）返回 None。
+/// 替换用得上：只处理文本文件，编码和换行符都要原样带回去。
+pub(crate) fn read_text(path: &Path, max_bytes: u64) -> Option<(String, String, String)> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > max_bytes {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if looks_binary(&bytes) {
+        return None;
+    }
+    let (text, encoding) = decode(&bytes);
+    let eol = eol_of(&text).to_string();
+    Some((normalize_eol(&text), encoding, eol))
+}
+
+#[tauri::command]
+pub fn file_write(path: String, content: String, encoding: String, eol: String) -> Result<SaveResult, String> {
+    let p = PathBuf::from(&path);
+    write_text(&p, &content, &encoding, &eol)
 }
 
 /// 文件状态。文件不存在也不报错，前端靠 exists 判断"被删了"

@@ -1,6 +1,6 @@
 [package]
 name = "x-notepad"
-version = "0.4.0"
+version = "0.5.0"
 description = "X-Notepad - 笔记 + 代码编辑器"
 authors = ["XFM <https://www.lovou.pw>"]
 edition = "2021"
@@ -26,6 +26,10 @@ encoding_rs = "0.8"
 # 元数据（标签 / 收藏 / 最近打开）
 rusqlite = { version = "0.41", features = ["bundled"] }
 anyhow = "1"
+# 全文搜索的正则模式 + 全库替换（线性时间，不怕灾难性回溯）
+regex = "1"
+# 新窗口的 URL 参数转义（把要打开的文件带过去）
+percent-encoding = "2"
 # 工作区文件监听（外部修改检测）
 notify = "8"
 # 插件市场：下载 zip（阻塞式，别把 tokio 运行时拖进同步命令）

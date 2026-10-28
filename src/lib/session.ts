@@ -13,6 +13,28 @@ const KEY = 'xnp:session:v1'
 const MAX_TABS = 30
 const WRITE_DELAY = 400
 
+/**
+ * 会话按窗口分仓：主窗口继续用老 key（升级上来不丢会话），
+ * 新窗口用 `xnp:session:v1:<label>`，于是两个窗口各记各的标签。
+ */
+let scope = ''
+
+function key(): string {
+  return `${KEY}${scope}`
+}
+
+/** 切换会话仓；要在任何读写之前调用（应用启动时按窗口 label 设一次） */
+export function useSessionScope(label: string): void {
+  // 只有多开出来的窗口（win-*）另起一仓；主窗口和浏览器演示都留在老 key 上
+  scope = /^win-/.test(label) ? `:${label}` : ''
+  memory = { ...EMPTY, cursors: {} }
+  loaded = false
+  if (timer) {
+    clearTimeout(timer)
+    timer = undefined
+  }
+}
+
 export interface SessionState {
   root: string | null
   tabs: string[]
@@ -42,7 +64,7 @@ function load(): void {
   if (loaded) return
   loaded = true
   try {
-    const raw = localStorage.getItem(KEY)
+    const raw = localStorage.getItem(key())
     if (!raw) return
     const parsed = JSON.parse(raw) as Partial<SessionState>
     memory = {
@@ -80,10 +102,10 @@ export function flushSession(): void {
   }
   try {
     if (!memory.root) {
-      localStorage.removeItem(KEY)
+      localStorage.removeItem(key())
       return
     }
-    localStorage.setItem(KEY, JSON.stringify(memory))
+    localStorage.setItem(key(), JSON.stringify(memory))
   } catch {
     // 存储满 / 隐私模式：会话丢了不影响使用
   }
@@ -164,7 +186,7 @@ export function clearSession(): void {
     timer = undefined
   }
   try {
-    localStorage.removeItem(KEY)
+    localStorage.removeItem(key())
   } catch {
     // ignore
   }

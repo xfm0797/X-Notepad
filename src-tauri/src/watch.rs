@@ -10,7 +10,7 @@
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::AppState;
 
@@ -72,12 +72,21 @@ fn kind_of(event: &Event) -> Option<&'static str> {
     Some("other")
 }
 
-/// 切换监听目录；重复调用会先停掉上一个监听
+/// 切换监听目录；重复调用会先停掉这个窗口上的上一个监听。
+///
+/// 监听器按窗口 label 各存一份：多窗口时 A 窗口换工作区不该把 B 的监听顶掉，
+/// 事件也只推给对应的那个窗口（`emit_to`），否则 B 会收到 A 的路径。
 #[tauri::command]
-pub fn watch_root(app: AppHandle, state: State<'_, AppState>, root: String) -> Result<(), String> {
-    let mut slot = state.watcher.lock().map_err(|e| e.to_string())?;
+pub fn watch_root(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    root: String,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    let mut map = state.watchers.lock().map_err(|e| e.to_string())?;
     // 丢掉旧的 watcher 就等于停止监听
-    *slot = None;
+    map.remove(&label);
 
     let root_path = PathBuf::from(&root);
     if !root_path.is_dir() {
@@ -85,6 +94,7 @@ pub fn watch_root(app: AppHandle, state: State<'_, AppState>, root: String) -> R
     }
 
     let emitter = app.clone();
+    let target = label.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
         let Ok(event) = res else { return };
         let Some(kind) = kind_of(&event) else { return };
@@ -97,7 +107,7 @@ pub fn watch_root(app: AppHandle, state: State<'_, AppState>, root: String) -> R
         if paths.is_empty() {
             return;
         }
-        let _ = emitter.emit("ws-change", FsChange { kind, paths });
+        let _ = emitter.emit_to(target.as_str(), "ws-change", FsChange { kind, paths });
     })
     .map_err(|e| format!("创建文件监听失败：{e}"))?;
 
@@ -105,6 +115,15 @@ pub fn watch_root(app: AppHandle, state: State<'_, AppState>, root: String) -> R
         .watch(&root_path, RecursiveMode::Recursive)
         .map_err(|e| format!("监听目录失败：{e}"))?;
 
-    *slot = Some(watcher);
+    map.insert(label, watcher);
     Ok(())
+}
+
+/// 窗口关了就把它的监听摘掉，不然 watcher 会跟着进程活到退出
+pub fn drop_window(app: &AppHandle, label: &str) {
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Ok(mut map) = state.watchers.lock() {
+            map.remove(label);
+        }
+    }
 }

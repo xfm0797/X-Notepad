@@ -5,9 +5,10 @@ interface Props {
   onTogglePlugins: () => void
   pluginsOpen: boolean
   onOpenPalette: () => void
+  onNewWindow: () => void
 }
 
-export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette }: Props) {
+export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette, onNewWindow }: Props) {
   const openFolder = useWorkspace(s => s.openFolder)
   const save = useWorkspace(s => s.save)
   const saveAll = useWorkspace(s => s.saveAll)
@@ -52,6 +53,9 @@ export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette }: Props) 
         </button>
         <button className="btn" onClick={() => void saveAll()} title="保存全部">
           保存全部
+        </button>
+        <button className="btn" onClick={onNewWindow} title="新建窗口 (Ctrl+Alt+N)：每个窗口独立的工作区与标签">
+          ⧉ 新窗口
         </button>
       </div>
 

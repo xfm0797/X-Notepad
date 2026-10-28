@@ -46,6 +46,12 @@ interface WorkspaceState {
   searchOpen: boolean
   searchQuery: string
   searchCase: boolean
+  /** 正则模式（FTS5 表达不了正则，走后端全表扫） */
+  searchRegex: boolean
+  /** 替换框的内容 */
+  searchReplace: string
+  /** 替换进行中（替换要跑一会儿，按钮得禁用） */
+  replacing: boolean
   searchHits: search.SearchHit[]
   searchBusy: boolean
   searchTook: number
@@ -73,11 +79,21 @@ interface WorkspaceState {
   toggleSearch: () => void
   setSearchQuery: (q: string) => void
   setSearchCase: (v: boolean) => void
+  setSearchRegex: (v: boolean) => void
+  setSearchReplace: (v: string) => void
   runSearch: () => Promise<void>
+  /** 全库替换（先 dry-run 报数量，确认后再落盘） */
+  replaceAll: () => Promise<void>
   /** silent=true 时不改状态栏提示（自动建索引时用） */
   rebuildIndex: (silent?: boolean) => Promise<void>
   refreshIndexStatus: () => Promise<void>
   openHit: (hit: search.SearchHit) => Promise<void>
+  /** 从磁盘重新读回若干文件（替换 / 外部改动之后用） */
+  reloadMany: (paths: string[]) => Promise<void>
+
+  /* 工作区 */
+  /** 按指定目录打开（新窗口带参数启动时用） */
+  openWorkspaceAt: (root: string, file?: string | null) => Promise<void>
 
   /* 文件树操作 */
   newEntry: (dir: string, name: string, kind: 'file' | 'dir') => Promise<string | null>
@@ -155,6 +171,9 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
   searchOpen: false,
   searchQuery: '',
   searchCase: false,
+  searchRegex: false,
+  searchReplace: '',
+  replacing: false,
   searchHits: [],
   searchBusy: false,
   searchTook: 0,
@@ -179,6 +198,21 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       // 桌面端顺带挂上文件监听，外部改动才能提示
       void api.watchRoot(root)
       // 索引后台重建，不挡打开文件夹
+      void get().rebuildIndex(true)
+    } catch (e) {
+      set({ message: String(e).replace(/^Error:\s*/, '') })
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  openWorkspaceAt: async (root, file) => {
+    set({ busy: true })
+    try {
+      const tree = await api.readTree(root)
+      set({ root, tree, tabs: [], docs: {}, active: null, message: `已打开 ${root}` })
+      void api.watchRoot(root)
+      if (file) await get().openFile(file)
       void get().rebuildIndex(true)
     } catch (e) {
       set({ message: String(e).replace(/^Error:\s*/, '') })
@@ -647,8 +681,125 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     if (get().searchQuery.trim()) void get().runSearch()
   },
 
+  setSearchRegex: (searchRegex) => {
+    set({ searchRegex })
+    if (get().searchQuery.trim()) void get().runSearch()
+  },
+
+  setSearchReplace: (searchReplace) => set({ searchReplace }),
+
+  replaceAll: async () => {
+    const { searchQuery, searchReplace, searchRegex, searchCase, root } = get()
+    // 正则里前后空格有意义，只有关键词模式才 trim
+    const pattern = searchRegex ? searchQuery : searchQuery.trim()
+    if (!pattern) {
+      set({ searchError: '先输入要查找的内容', searchOpen: true })
+      return
+    }
+    if (searchRegex) {
+      // 正则先在本地编译一次：错误立刻反馈，不用等一轮 IPC
+      try {
+        search.compilePattern(pattern, searchCase)
+      } catch (e) {
+        set({ searchError: String(e).replace(/^Error:\s*/, '') })
+        return
+      }
+    }
+
+    // 先把编辑器里的改动落盘，否则替换写完磁盘又被自动保存盖回去
+    await get().saveAll()
+    const skip = Object.values(get().docs)
+      .filter(d => d.content !== d.savedContent)
+      .map(d => d.path)
+
+    const base: search.ReplaceOptions = {
+      regex: searchRegex,
+      caseSensitive: searchCase,
+      root: root ?? undefined,
+      skip
+    }
+
+    set({ replacing: true, searchError: '' })
+    try {
+      const dry = await search.replaceAll(pattern, searchReplace, { ...base, dryRun: true })
+      if (!dry.files) {
+        set({
+          replacing: false,
+          searchError: '',
+          message: dry.skipped.length
+            ? '这些文件有未保存的修改，先保存再替换'
+            : `没有找到「${pattern}」`
+        })
+        return
+      }
+
+      const preview = dry.changed
+        .slice(0, 6)
+        .map(c => `· ${c.name}（${c.count} 处）`)
+        .join('\n')
+      const more = dry.changed.length > 6 ? `\n… 还有 ${dry.changed.length - 6} 个文件` : ''
+      const skippedNote = dry.skipped.length
+        ? `\n\n跳过 ${dry.skipped.length} 个有未保存修改的文件。`
+        : ''
+      const okay = await confirm({
+        title: '全部替换',
+        message: `将在 ${dry.files} 个文件里替换 ${dry.replacements} 处：\n\n${preview}${more}${skippedNote}\n\n此操作没有撤销，确定替换吗？`,
+        confirmText: '替换',
+        danger: true
+      })
+      if (!okay) {
+        set({ replacing: false })
+        return
+      }
+
+      const report = await search.replaceAll(pattern, searchReplace, base)
+      await get().reloadMany(report.changed.map(c => c.path))
+      set({
+        replacing: false,
+        message: `已替换 ${report.files} 个文件 · ${report.replacements} 处`
+      })
+      if (get().searchQuery.trim()) void get().runSearch()
+    } catch (e) {
+      set({ replacing: false, searchError: String(e).replace(/^Error:\s*/, '') })
+    }
+  },
+
+  reloadMany: async (paths) => {
+    for (const path of paths) {
+      if (!get().docs[path]) continue
+      try {
+        const file = await api.readFile(path)
+        set(s => {
+          const doc = s.docs[path]
+          if (!doc) return s
+          return {
+            docs: {
+              ...s.docs,
+              [path]: {
+                ...doc,
+                content: file.content,
+                savedContent: file.content,
+                encoding: file.encoding,
+                eol: file.eol,
+                size: file.size,
+                mtime: file.mtime,
+                external: false,
+                gone: false
+              }
+            }
+          }
+        })
+        drafts.drop(path)
+      } catch {
+        /* 读不回来就算了，下次打开会重新读 */
+      }
+    }
+  },
+
   runSearch: async () => {
-    const query = get().searchQuery.trim()
+    // 正则里前后空格是有意义的，只有关键词模式才 trim
+    const raw = get().searchQuery
+    const query = get().searchRegex ? raw : raw.trim()
     const seq = ++searchSeq
     if (!query) {
       set({ searchHits: [], searchTook: 0, searchError: '', searchBusy: false })
@@ -659,6 +810,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     try {
       const hits = await search.queryIndex(query, {
         caseSensitive: get().searchCase,
+        regex: get().searchRegex,
         root: get().root ?? undefined,
         limit: 200
       })

@@ -15,6 +15,7 @@ import { isTauri } from './lib/api'
 import { isMarkdown } from './lib/lang'
 import * as session from './lib/session'
 import { onFsChange } from './lib/watch'
+import { currentLabel, initialTarget, openNewWindow } from './lib/window'
 import { askNewEntry, useWorkspace } from './store/workspace'
 
 const DEMO_ENTRY = '/demo/README.md'
@@ -36,10 +37,13 @@ function Welcome() {
           <kbd>Ctrl</kbd> + <kbd>P</kbd> 命令面板，输入文件名可以直接跳过去
         </li>
         <li>
-          <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> 全文搜索（搜正文，不只是文件名）
+          <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> 全文搜索：结果按目录分组，点 <b>.*</b> 切正则
         </li>
         <li>
           <kbd>Ctrl</kbd> + <kbd>N</kbd> 新建文件，<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd> 新建文件夹
+        </li>
+        <li>
+          <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>N</kbd> 新开窗口，两个窗口可以盯两个文件夹
         </li>
         <li>文件树右键可以新建、重命名、删除；关了软件下次还回到这一页</li>
         <li>Markdown 分屏预览 + 大纲，代码文件自动切到纯编辑器</li>
@@ -84,6 +88,10 @@ export default function App() {
       } else if (key === 's' && e.shiftKey) {
         e.preventDefault()
         void useWorkspace.getState().saveAll()
+      } else if (key === 'n' && e.altKey) {
+        // Ctrl+Alt+N：新开一个窗口（Ctrl+N 留给新建文件）
+        e.preventDefault()
+        void openNewWindow({ root: useWorkspace.getState().root })
       } else if (key === 'n') {
         const root = useWorkspace.getState().root
         if (!root) return
@@ -126,8 +134,17 @@ export default function App() {
   // 启动：先恢复会话（上次的文件夹和标签），再问要不要捡回未保存的草稿
   useEffect(() => {
     void (async () => {
+      // 会话按窗口分仓：主窗口沿用老 key，新窗口各记各的
+      session.useSessionScope(currentLabel())
+
       const state = useWorkspace.getState()
-      await state.restoreSession()
+      const target = initialTarget()
+      if (target.root) {
+        // 从别的窗口带参数过来的：直接进那个工作区，不读本窗口的旧会话
+        await state.openWorkspaceAt(target.root, target.file)
+      } else {
+        await state.restoreSession()
+      }
       // 浏览器演示模式：没有会话就挂上内存示例工作区，不装 Rust 也能看 UI
       if (!isTauri && !useWorkspace.getState().root) {
         await state.openFolder()
@@ -170,6 +187,7 @@ export default function App() {
         pluginsOpen={pluginsOpen}
         onTogglePlugins={() => setPluginsOpen(o => !o)}
         onOpenPalette={() => setPaletteOpen(true)}
+        onNewWindow={() => void openNewWindow({ root: useWorkspace.getState().root })}
       />
       <div className="main">
         <FileTree />

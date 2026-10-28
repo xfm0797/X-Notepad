@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "X-Notepad 主窗口：文件读写全部走自定义 Rust 命令（自己处理编码），前端只需要 dialog 选文件夹",
-  "windows": ["main"],
+  "description": "X-Notepad 全部窗口：文件读写走自定义 Rust 命令（自己处理编码），前端只需要 dialog 选文件夹。新窗口 label 是 win-1、win-2…，所以用通配",
+  "windows": ["main", "win-*"],
   "permissions": ["core:default", "dialog:default", "dialog:allow-open"]
 }

@@ -41,6 +41,26 @@ export interface QueryOptions {
   caseSensitive?: boolean
   limit?: number
   root?: string
+  /** 正则模式：不走 FTS5，直接在正文上跑 regex */
+  regex?: boolean
+}
+
+export interface ReplaceOptions {
+  caseSensitive?: boolean
+  regex?: boolean
+  root?: string
+  /** 有未保存修改的打开文件，别在磁盘上动它 */
+  skip?: string[]
+  dryRun?: boolean
+}
+
+export interface ReplaceReport {
+  files: number
+  replacements: number
+  changed: Array<{ path: string; name: string; count: number }>
+  skipped: Array<{ path: string; reason: string }>
+  dryRun: boolean
+  ms: number
 }
 
 /** 一个词的命中区间 [start, end)，UTF-16 下标 */
@@ -94,16 +114,83 @@ export function rangesIn(text: string, terms: string[], caseSensitive = false): 
   return merged
 }
 
+/* ------------------------------------------------------------------ */
+/* 正则                                                                 */
+/* ------------------------------------------------------------------ */
+
+function reFlags(caseSensitive: boolean): string {
+  return caseSensitive ? 'g' : 'gi'
+}
+
+/** 编译用户输入的正则；出错时给一句人话（桌面端由 Rust 侧报错） */
+export function compilePattern(pattern: string, caseSensitive = false): RegExp {
+  if (!pattern) throw new Error('正则表达式不能为空')
+  try {
+    return new RegExp(pattern, reFlags(caseSensitive))
+  } catch (e) {
+    throw new Error(`正则表达式无效：${String(e).replace(/^SyntaxError:\s*/, '')}`)
+  }
+}
+
+export function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * 逐次 exec 遍历匹配；零宽匹配（`^`、`\b`、lookahead）跳过，
+ * 否则 lastIndex 不前进会死循环。
+ */
+export function forEachMatch(
+  text: string,
+  re: RegExp,
+  visit: (start: number, end: number) => boolean | void
+): void {
+  re.lastIndex = 0
+  let guard = 0
+  for (;;) {
+    const m = re.exec(text)
+    if (!m) break
+    const start = m.index
+    const end = start + m[0].length
+    if (m[0].length === 0) re.lastIndex = start + 1
+    if (end > start && visit(start, end) === false) break
+    if (++guard > 20000) break
+  }
+  re.lastIndex = 0
+}
+
+export function rangesInRegex(text: string, re: RegExp): Range[] {
+  const found: Range[] = []
+  forEachMatch(text, re, (s, e) => {
+    found.push([s, e])
+  })
+  found.sort((a, b) => a[0] - b[0])
+  const merged: Range[] = []
+  for (const r of found) {
+    const last = merged[merged.length - 1]
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1])
+    else merged.push([r[0], r[1]])
+  }
+  return merged
+}
+
+export function countRegex(text: string, re: RegExp): number {
+  let n = 0
+  forEachMatch(text, re, () => {
+    n++
+  })
+  return n
+}
+
 function flatten(s: string): string {
   return s.replace(/\s+/g, ' ')
 }
 
-/** 以 anchor 为中心截一段，命中处切成 hit 片段（换行压成空格，一行显示完） */
-export function makeSnippet(
+/** 以 anchor 为中心截一段，find 给出的命中处切成 hit 片段（换行压成空格，一行显示完） */
+export function snippetBy(
   text: string,
   anchor: number,
-  terms: string[],
-  caseSensitive = false,
+  find: (win: string) => Range[],
   back = 60,
   fwd = 120
 ): SnippetSeg[] {
@@ -113,7 +200,7 @@ export function makeSnippet(
 
   const segs: SnippetSeg[] = []
   let cursor = 0
-  for (const [s, e] of rangesIn(win, terms, caseSensitive)) {
+  for (const [s, e] of find(win)) {
     if (s > cursor) {
       const piece = flatten(win.slice(cursor, s))
       if (piece.trim()) segs.push({ text: piece, hit: false })
@@ -131,6 +218,18 @@ export function makeSnippet(
   const last = segs[segs.length - 1]
   if (end < text.length) segs[segs.length - 1] = { ...last, text: `${last.text.replace(/\s+$/, '')}…` }
   return segs
+}
+
+/** 以 anchor 为中心截一段，命中处切成 hit 片段（换行压成空格，一行显示完） */
+export function makeSnippet(
+  text: string,
+  anchor: number,
+  terms: string[],
+  caseSensitive = false,
+  back = 60,
+  fwd = 120
+): SnippetSeg[] {
+  return snippetBy(text, anchor, win => rangesIn(win, terms, caseSensitive), back, fwd)
 }
 
 export function lineColOf(text: string, index: number): { line: number; column: number } {
@@ -168,7 +267,9 @@ export function offsetOf(text: string, line: number, column: number): number {
 /* 浏览器演示模式：内存里扫一遍                                        */
 /* ------------------------------------------------------------------ */
 
-async function listDemoFiles(root: string): Promise<Array<{ path: string; content: string }>> {
+async function listDemoFiles(
+  root: string
+): Promise<Array<{ path: string; content: string; encoding: string; eol: 'LF' | 'CRLF' }>> {
   const tree = await api.readTree(root)
   const paths: string[] = []
   const walk = (nodes: api.TreeNode[]) => {
@@ -179,11 +280,11 @@ async function listDemoFiles(root: string): Promise<Array<{ path: string; conten
   }
   walk(tree)
 
-  const out: Array<{ path: string; content: string }> = []
+  const out: Array<{ path: string; content: string; encoding: string; eol: 'LF' | 'CRLF' }> = []
   for (const p of paths) {
     try {
       const f = await api.readFile(p)
-      if (!f.binary) out.push({ path: p, content: f.content })
+      if (!f.binary) out.push({ path: p, content: f.content, encoding: f.encoding, eol: f.eol })
     } catch {
       /* 读不了就跳过 */
     }
@@ -192,15 +293,18 @@ async function listDemoFiles(root: string): Promise<Array<{ path: string; conten
 }
 
 async function queryLocal(root: string, query: string, opts: QueryOptions): Promise<SearchHit[]> {
-  const terms = termsOf(query)
-  if (!terms.length) return []
+  const caseSensitive = !!opts.caseSensitive
+  const re = opts.regex ? compilePattern(query, caseSensitive) : null
+  const terms = re ? [] : termsOf(query)
+  if (!re && !terms.length) return []
 
   const limit = opts.limit ?? 200
-  const caseSensitive = !!opts.caseSensitive
   const hits: SearchHit[] = []
 
   for (const file of await listDemoFiles(root)) {
-    const ranges = rangesIn(file.content, terms, caseSensitive)
+    const ranges = re
+      ? rangesInRegex(file.content, re)
+      : rangesIn(file.content, terms, caseSensitive)
     if (!ranges.length) continue
     const at = ranges[0][0]
     const { line, column } = lineColOf(file.content, at)
@@ -210,14 +314,61 @@ async function queryLocal(root: string, query: string, opts: QueryOptions): Prom
       score: -ranges.length,
       line,
       column,
-      matches: ranges.length,
-      snippet: makeSnippet(file.content, at, terms, caseSensitive)
+      matches: re ? countRegex(file.content, re) : ranges.length,
+      snippet: re
+        ? snippetBy(file.content, at, win => rangesInRegex(win, re))
+        : makeSnippet(file.content, at, terms, caseSensitive)
     })
     if (hits.length >= limit) break
   }
 
   hits.sort((a, b) => a.score - b.score || a.path.localeCompare(b.path))
   return hits
+}
+
+async function replaceLocal(
+  root: string,
+  pattern: string,
+  replacement: string,
+  opts: ReplaceOptions
+): Promise<ReplaceReport> {
+  const started = Date.now()
+  if (!pattern) throw new Error('查找内容不能为空')
+  const caseSensitive = !!opts.caseSensitive
+  const re = opts.regex
+    ? compilePattern(pattern, caseSensitive)
+    : new RegExp(escapeRe(pattern), reFlags(caseSensitive))
+
+  const skip = new Set(opts.skip ?? [])
+  const changed: ReplaceReport['changed'] = []
+  const skipped: ReplaceReport['skipped'] = []
+  let replacements = 0
+
+  for (const file of await listDemoFiles(root)) {
+    if (skip.has(file.path)) {
+      skipped.push({ path: file.path, reason: '有未保存的修改' })
+      continue
+    }
+    const count = countRegex(file.content, re)
+    if (!count) continue
+    // 正则模式下替换串按模板解释（$1），普通文本模式里 $ 就是字面量
+    const next = opts.regex
+      ? file.content.replace(re, replacement)
+      : file.content.replace(re, () => replacement)
+    if (!opts.dryRun) await api.writeFile(file.path, next, file.encoding, file.eol)
+    replacements += count
+    changed.push({ path: file.path, name: baseName(file.path), count })
+  }
+
+  changed.sort((a, b) => a.path.localeCompare(b.path))
+  return {
+    files: changed.length,
+    replacements,
+    changed,
+    skipped,
+    dryRun: !!opts.dryRun,
+    ms: Date.now() - started
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,6 +378,16 @@ async function queryLocal(root: string, query: string, opts: QueryOptions): Prom
 export async function queryIndex(query: string, opts: QueryOptions = {}): Promise<SearchHit[]> {
   if (!api.isTauri) return queryLocal(opts.root ?? '/demo', query, opts)
   return invoke<SearchHit[]>('search_query', { query, options: opts })
+}
+
+/** 全库替换。dryRun=true 只统计数量，前端拿它去问用户「确定替换 N 处？」 */
+export async function replaceAll(
+  pattern: string,
+  replacement: string,
+  opts: ReplaceOptions = {}
+): Promise<ReplaceReport> {
+  if (!api.isTauri) return replaceLocal(opts.root ?? '/demo', pattern, replacement, opts)
+  return invoke<ReplaceReport>('search_replace', { pattern, replacement, options: opts })
 }
 
 export async function buildIndex(root: string): Promise<IndexStatus> {

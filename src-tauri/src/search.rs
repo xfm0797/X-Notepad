@@ -10,9 +10,10 @@
 
 use crate::fsx;
 use crate::AppState;
+use regex::{Regex, RegexBuilder};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -21,6 +22,8 @@ use tauri::State;
 const MAX_FILE: u64 = 1_500_000;
 /// 一次返回的命中上限
 const MAX_HITS: u32 = 200;
+/// 正则模式下最多扫多少个文件（正则没有索引，只能老老实实全表扫）
+const MAX_SCAN_FILES: usize = 20_000;
 /// 只取正文前 20000 字符做摘要，避免大文件把内存拉满
 const BODY_WINDOW: i64 = 20_000;
 
@@ -75,6 +78,8 @@ pub struct QueryOptions {
     pub case_sensitive: bool,
     pub limit: Option<u32>,
     pub root: Option<String>,
+    /// 正则模式：FTS5 没法表达正则，直接在索引里的正文上跑 regex
+    pub regex: bool,
 }
 
 /* ------------------------------------------------------------------ */
@@ -265,24 +270,9 @@ fn window(text: &str, anchor: usize, back: usize, fwd: usize) -> (usize, usize) 
     (start, end)
 }
 
-fn make_snippet(text: &str, anchor: usize, terms: &[String], case_sensitive: bool) -> Vec<Seg> {
-    let (start, end) = window(text, anchor, 60, 120);
-    let win = &text[start..end];
-
-    // 窗口里所有命中区间，排序后合并重叠
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for t in terms {
-        if t.is_empty() {
-            continue;
-        }
-        let mut from = 0usize;
-        while from <= win.len() {
-            let Some(rel) = find_in(&win[from..], t, case_sensitive) else { break };
-            let s = from + rel;
-            ranges.push((s, s + t.len()));
-            from = s + t.len().max(1);
-        }
-    }
+/// 把窗口里的命中区间合并、切成 hit/非 hit 片段
+fn assemble(win: &str, ranges: Vec<(usize, usize)>, before: bool, after: bool) -> Vec<Seg> {
+    let mut ranges: Vec<(usize, usize)> = ranges;
     ranges.sort_unstable();
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (s, e) in ranges {
@@ -319,17 +309,58 @@ fn make_snippet(text: &str, anchor: usize, terms: &[String], case_sensitive: boo
             hit: false,
         });
     }
-    if start > 0 {
+    if before {
         if let Some(first) = segs.first_mut() {
             first.text.insert(0, '…');
         }
     }
-    if end < text.len() {
+    if after {
         if let Some(last) = segs.last_mut() {
             last.text.push('…');
         }
     }
     segs
+}
+
+/// 以 anchor 为中心开窗，窗口内的命中区间交给 collect 算（词搜索 / 正则共用）
+fn snippet_with<F>(text: &str, anchor: usize, collect: F) -> Vec<Seg>
+where
+    F: Fn(&str) -> Vec<(usize, usize)>,
+{
+    let (start, end) = window(text, anchor, 60, 120);
+    let win = &text[start..end];
+    assemble(win, collect(win), start > 0, end < text.len())
+}
+
+fn term_ranges(win: &str, terms: &[String], case_sensitive: bool) -> Vec<(usize, usize)> {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for t in terms {
+        if t.is_empty() {
+            continue;
+        }
+        let mut from = 0usize;
+        while from <= win.len() {
+            let Some(rel) = find_in(&win[from..], t, case_sensitive) else { break };
+            let s = from + rel;
+            ranges.push((s, s + t.len()));
+            from = s + t.len().max(1);
+        }
+    }
+    ranges
+}
+
+fn make_snippet(text: &str, anchor: usize, terms: &[String], case_sensitive: bool) -> Vec<Seg> {
+    snippet_with(text, anchor, |win| term_ranges(win, terms, case_sensitive))
+}
+
+/// 正则版的摘要：窗口内所有匹配区间（跳过空匹配，不然会切出零宽片段）
+fn regex_snippet(text: &str, anchor: usize, re: &Regex) -> Vec<Seg> {
+    snippet_with(text, anchor, |win| {
+        re.find_iter(win)
+            .filter(|m| m.end() > m.start())
+            .map(|m| (m.start(), m.end()))
+            .collect()
+    })
 }
 
 /* ------------------------------------------------------------------ */
@@ -566,6 +597,10 @@ fn query_impl(db: &Db, raw: &str, opts: &QueryOptions) -> Result<Vec<Hit>, Strin
     if query.is_empty() {
         return Ok(Vec::new());
     }
+    if opts.regex {
+        // 正则里前后空格是有意义的，这里用原始输入，不 trim
+        return regex_query_impl(db, raw, opts);
+    }
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|t| t.trim_end_matches('*').to_string())
@@ -653,6 +688,299 @@ fn query_impl(db: &Db, raw: &str, opts: &QueryOptions) -> Result<Vec<Hit>, Strin
 }
 
 /* ------------------------------------------------------------------ */
+/* 正则                                                                 */
+/* ------------------------------------------------------------------ */
+
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or("").trim().to_string()
+}
+
+/// regex 的报错是多行的（原串 + 插入符 + `error: …`），
+/// 只有最后一行 `error: xxx` 是人要看的，其余全丢掉
+fn regex_error_text(e: &regex::Error) -> String {
+    let raw = e.to_string();
+    for line in raw.lines().rev() {
+        if let Some(rest) = line.trim().strip_prefix("error:") {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
+    }
+    first_line(&raw)
+}
+
+/// 统一的正则编译入口：大小写、体积上限都在这里定，查询和替换共用
+fn build_regex(pattern: &str, case_sensitive: bool) -> Result<Regex, String> {
+    if pattern.is_empty() {
+        return Err("正则表达式不能为空".into());
+    }
+    RegexBuilder::new(pattern)
+        .case_insensitive(!case_sensitive)
+        // 默认 10MB 的程序上限对我们够用，但显式写出来免得大文件被拒
+        .size_limit(16 * 1024 * 1024)
+        .dfa_size_limit(16 * 1024 * 1024)
+        .build()
+        .map_err(|e| format!("正则表达式无效：{}", regex_error_text(&e)))
+}
+
+/// 正则查询：FTS5 表达不了正则，直接在 docs 表的正文上跑。
+/// 文件数上限 2 万，够笔记仓库用；再多就得考虑抽出独立进程了。
+fn regex_query_impl(db: &Db, pattern: &str, opts: &QueryOptions) -> Result<Vec<Hit>, String> {
+    let re = build_regex(pattern, opts.case_sensitive)?;
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let limit = opts.limit.unwrap_or(MAX_HITS).clamp(1, 500) as usize;
+
+    let mut stmt = conn
+        .prepare("SELECT path, title, body FROM docs WHERE (?1 IS NULL OR root = ?1)")
+        .map_err(|e| format!("准备查询失败：{e}"))?;
+    let rows = stmt
+        .query_map(params![opts.root.as_deref()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| format!("查询失败：{e}"))?;
+
+    let mut hits: Vec<Hit> = Vec::new();
+    let mut scanned = 0usize;
+    for row in rows {
+        let (path, title, body) = row.map_err(|e| e.to_string())?;
+        scanned += 1;
+        if scanned > MAX_SCAN_FILES {
+            break;
+        }
+
+        let mut count = 0u32;
+        let mut anchor: Option<usize> = None;
+        for m in re.find_iter(&body) {
+            if m.end() <= m.start() {
+                continue;
+            }
+            if anchor.is_none() {
+                anchor = Some(m.start());
+            }
+            count += 1;
+            if count >= 9999 {
+                break;
+            }
+        }
+        // 正文没命中就看文件名 / 路径：正则经常是用来找命名规律的
+        if anchor.is_none() {
+            if !re.is_match(&title) && !re.is_match(&path) {
+                continue;
+            }
+            count = 1;
+        }
+
+        let anchor_pos = anchor.unwrap_or(0);
+        let (line, column) = line_col(&body, anchor_pos);
+        hits.push(Hit {
+            path,
+            name: title,
+            // 命中多的排前面；前端只用来排序，不显示这个数
+            score: -(count as f64),
+            line,
+            column,
+            matches: count,
+            snippet: regex_snippet(&body, anchor_pos, &re),
+        });
+        if hits.len() >= limit {
+            break;
+        }
+    }
+
+    hits.sort_by(|a, b| {
+        a.score
+            .partial_cmp(&b.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(hits)
+}
+
+/* ------------------------------------------------------------------ */
+/* 全库替换                                                             */
+/* ------------------------------------------------------------------ */
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReplaceOptions {
+    pub case_sensitive: bool,
+    pub regex: bool,
+    pub root: Option<String>,
+    /// 有未保存修改的打开文件：别动磁盘，回头自动保存会把替换结果盖掉
+    pub skip: Vec<String>,
+    /// 只统计不落盘
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Replaced {
+    pub path: String,
+    pub name: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Skipped {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceReport {
+    pub files: u32,
+    pub replacements: u32,
+    pub changed: Vec<Replaced>,
+    pub skipped: Vec<Skipped>,
+    pub dry_run: bool,
+    pub ms: u64,
+}
+
+enum Matcher {
+    Re(Regex),
+    /// 普通文本：`$1` 就是字面上的三个字符，不按模板解释
+    Lit { needle: String, ci: bool },
+}
+
+impl Matcher {
+    fn build(pattern: &str, opts: &ReplaceOptions) -> Result<Self, String> {
+        if pattern.is_empty() {
+            return Err("查找内容不能为空".into());
+        }
+        if opts.regex {
+            Ok(Matcher::Re(build_regex(pattern, opts.case_sensitive)?))
+        } else {
+            Ok(Matcher::Lit {
+                needle: pattern.to_string(),
+                ci: !opts.case_sensitive,
+            })
+        }
+    }
+
+    /// 返回（替换后的文本，替换处数）
+    fn replace_all(&self, text: &str, with: &str) -> (String, u32) {
+        match self {
+            Matcher::Re(re) => {
+                let count = re
+                    .find_iter(text)
+                    .filter(|m| m.end() > m.start())
+                    .count() as u32;
+                if count == 0 {
+                    return (text.to_string(), 0);
+                }
+                // 正则模式下 with 走模板语义：$1 / ${name} 会展开
+                (re.replace_all(text, with).into_owned(), count)
+            }
+            Matcher::Lit { needle, ci } => {
+                if needle.is_empty() {
+                    return (text.to_string(), 0);
+                }
+                let mut out = String::with_capacity(text.len());
+                let mut count = 0u32;
+                let mut at = 0usize;
+                while at <= text.len() {
+                    let Some(rel) = find_in(&text[at..], needle, !*ci) else { break };
+                    let s = at + rel;
+                    out.push_str(&text[at..s]);
+                    out.push_str(with);
+                    count += 1;
+                    at = s + needle.len();
+                }
+                out.push_str(&text[at..]);
+                (out, count)
+            }
+        }
+    }
+}
+
+fn replace_impl(
+    db: &Db,
+    pattern: &str,
+    replacement: &str,
+    opts: &ReplaceOptions,
+) -> Result<ReplaceReport, String> {
+    let started = std::time::Instant::now();
+    let matcher = Matcher::build(pattern, opts)?;
+    let conn = db.lock().map_err(|e| e.to_string())?;
+
+    // 目标文件来自索引：只处理文本文件，二进制 / 超大文件自然被挡在外面
+    let targets: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT path, root FROM docs WHERE (?1 IS NULL OR root = ?1)")
+            .map_err(|e| format!("准备查询失败：{e}"))?;
+        let rows = stmt
+            .query_map(params![opts.root.as_deref()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("查询失败：{e}"))?;
+        rows.flatten().collect()
+    };
+
+    let skip: HashSet<&str> = opts.skip.iter().map(|s| s.as_str()).collect();
+    let mut changed: Vec<Replaced> = Vec::new();
+    let mut skipped: Vec<Skipped> = Vec::new();
+    let mut replacements = 0u32;
+
+    for (path, root) in targets {
+        if skip.contains(path.as_str()) {
+            skipped.push(Skipped {
+                path,
+                reason: "有未保存的修改".into(),
+            });
+            continue;
+        }
+        let p = PathBuf::from(&path);
+        let Some((text, encoding, eol)) = fsx::read_text(&p, MAX_FILE) else {
+            // 被删了 / 二进制 / 太大：不算错误，静默略过
+            continue;
+        };
+        let (next, count) = matcher.replace_all(&text, replacement);
+        if count == 0 {
+            continue;
+        }
+
+        if !opts.dry_run {
+            if let Err(e) = fsx::write_text(&p, &next, &encoding, &eol) {
+                skipped.push(Skipped { path, reason: e });
+                continue;
+            }
+            // 替换完立刻重灌这一条，别让索引和磁盘对不上
+            if let Err(e) = index_one(&conn, &root, &p) {
+                eprintln!("替换后重灌索引 {path} 失败：{e}");
+            }
+        }
+
+        replacements += count;
+        changed.push(Replaced {
+            name: p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            path,
+            count,
+        });
+    }
+
+    changed.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(ReplaceReport {
+        files: changed.len() as u32,
+        replacements,
+        changed,
+        skipped,
+        dry_run: opts.dry_run,
+        ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/* ------------------------------------------------------------------ */
 /* 命令                                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -675,6 +1003,21 @@ pub async fn search_query(
     tauri::async_runtime::spawn_blocking(move || query_impl(&db, &query, &opts))
         .await
         .map_err(|e| format!("搜索任务失败：{e}"))?
+}
+
+/// 全库正则 / 文本替换。dryRun 时只统计不写盘，前端先拿数量去问用户
+#[tauri::command]
+pub async fn search_replace(
+    state: State<'_, AppState>,
+    pattern: String,
+    replacement: String,
+    options: Option<ReplaceOptions>,
+) -> Result<ReplaceReport, String> {
+    let db = state.search_db.clone();
+    let opts = options.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || replace_impl(&db, &pattern, &replacement, &opts))
+        .await
+        .map_err(|e| format!("替换任务失败：{e}"))?
 }
 
 /// 单个文件重灌（保存、外部改动、改名之后调用）

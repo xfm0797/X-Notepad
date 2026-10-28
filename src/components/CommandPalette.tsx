@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from '../lib/api'
 import { baseName } from '../lib/path'
+import { openNewWindow } from '../lib/window'
 import { askNewEntry, useWorkspace } from '../store/workspace'
 
 interface Props {
@@ -114,6 +115,19 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
       },
       { id: 'open-folder', group: '命令', label: '打开文件夹', hint: 'Ctrl+O', run: () => w.openFolder() },
       { id: 'refresh', group: '命令', label: '刷新文件树', run: () => w.refreshTree() },
+      {
+        id: 'new-window',
+        group: '命令',
+        label: '新建窗口',
+        hint: 'Ctrl+Alt+N',
+        run: () => openNewWindow({ root: w.root })
+      },
+      {
+        id: 'open-in-new-window',
+        group: '命令',
+        label: '在新窗口打开当前文件',
+        run: () => (active ? openNewWindow({ root: w.root, path: active }) : undefined)
+      },
       { id: 'plugins', group: '命令', label: '插件与插件市场', run: onOpenPlugins },
       {
         id: 'search',
@@ -121,6 +135,15 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
         label: '全文搜索',
         hint: 'Ctrl+Shift+F',
         run: () => w.toggleSearch()
+      },
+      {
+        id: 'search-regex',
+        group: '命令',
+        label: '正则查找与替换',
+        run: () => {
+          w.setSearchRegex(true)
+          if (!w.searchOpen) w.toggleSearch()
+        }
       },
       { id: 'reindex', group: '命令', label: '重建搜索索引', run: () => w.rebuildIndex() },
       {

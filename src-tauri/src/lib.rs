@@ -11,7 +11,9 @@ mod meta;
 mod plugins;
 mod search;
 mod watch;
+mod windows;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -21,8 +23,8 @@ pub struct AppState {
     /// 全文索引库（FTS5）。索引重建要跑几秒，所以用 Arc 好丢进阻塞线程池
     pub search_db: search::Db,
     pub plugins: plugins::PluginHost,
-    /// 当前工作区的 watcher；换目录时整个替换掉
-    pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// 当前工作区的 watcher，按窗口 label 各存一份（多窗口互不干扰）
+    pub watchers: Mutex<HashMap<String, notify::RecommendedWatcher>>,
     /// 用户插件目录（市场安装到这里）
     pub plugin_dir: std::path::PathBuf,
 }
@@ -58,10 +60,16 @@ pub fn run() {
                 db: Mutex::new(conn),
                 search_db: Arc::new(Mutex::new(search_conn)),
                 plugins: plugins::PluginHost::new(plugin_dirs.clone()),
-                watcher: Mutex::new(None),
+                watchers: Mutex::new(HashMap::new()),
                 plugin_dir: plugin_dirs[0].clone(),
             });
             Ok(())
+        })
+        // 窗口关掉时把它那份文件监听一起摘掉
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                watch::drop_window(window.app_handle(), window.label());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             fsx::ws_tree,
@@ -81,9 +89,11 @@ pub fn run() {
             plugins::plugin_run,
             search::search_build,
             search::search_query,
+            search::search_replace,
             search::search_update,
             search::search_remove,
             search::search_status,
+            windows::window_new,
             market::market_fetch,
             market::plugin_install,
             market::plugin_install_zip,
