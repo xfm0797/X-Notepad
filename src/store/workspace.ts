@@ -74,7 +74,8 @@ interface WorkspaceState {
   setSearchQuery: (q: string) => void
   setSearchCase: (v: boolean) => void
   runSearch: () => Promise<void>
-  rebuildIndex: () => Promise<void>
+  /** silent=true 时不改状态栏提示（自动建索引时用） */
+  rebuildIndex: (silent?: boolean) => Promise<void>
   refreshIndexStatus: () => Promise<void>
   openHit: (hit: search.SearchHit) => Promise<void>
 
@@ -178,7 +179,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       // 桌面端顺带挂上文件监听，外部改动才能提示
       void api.watchRoot(root)
       // 索引后台重建，不挡打开文件夹
-      void get().rebuildIndex()
+      void get().rebuildIndex(true)
     } catch (e) {
       set({ message: String(e).replace(/^Error:\s*/, '') })
     } finally {
@@ -401,7 +402,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
 
     // 索引跟着改名走：目录改名整棵重灌（前缀映射太啰嗦），单文件挪一条
     if (wasDir) {
-      void get().rebuildIndex()
+      void get().rebuildIndex(true)
     } else {
       void search
         .removeIndex(path)
@@ -565,7 +566,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       outline: saved.outline,
       message: restored ? `已恢复上次的 ${restored} 个标签` : ''
     })
-    void get().rebuildIndex()
+    void get().rebuildIndex(true)
   },
 
   /* ---------------- 崩溃恢复 ---------------- */
@@ -675,7 +676,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     }
   },
 
-  rebuildIndex: async () => {
+  rebuildIndex: async (silent) => {
     const root = get().root
     if (!root) return
     set({ indexing: true, searchError: '' })
@@ -684,14 +685,14 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       set({
         indexStatus: report,
         indexing: false,
-        message: `已索引 ${report.files} 个文件（${report.ms ?? 0} ms）`
+        ...(silent ? {} : { message: `已索引 ${report.files} 个文件（${report.ms ?? 0} ms）` })
       })
       if (get().searchQuery.trim()) void get().runSearch()
     } catch (e) {
       set({
         indexing: false,
         searchError: String(e).replace(/^Error:\s*/, ''),
-        message: '建立索引失败'
+        ...(silent ? {} : { message: '建立索引失败' })
       })
     }
   },
