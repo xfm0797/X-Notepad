@@ -3,6 +3,7 @@ import * as api from '../lib/api'
 import * as drafts from '../lib/drafts'
 import * as graphLib from '../lib/graph'
 import * as links from '../lib/links'
+import * as refactor from '../lib/refactor'
 import * as search from '../lib/search'
 import * as session from '../lib/session'
 import * as tags from '../lib/tags'
@@ -213,6 +214,112 @@ async function commitTags(path: string, next: string) {
   } catch (e) {
     useWorkspace.setState({ message: `写标签失败：${String(e).replace(/^Error:\s*/, '')}` })
   }
+}
+
+/**
+ * 算一遍「改名后哪些引用要跟着改」。
+ *
+ * 必须在**真正改名之前**调用：`[[旧名]]` 靠名字解析到文件，改完名就解析不到了。
+ * 只读被筛出来的文件（索引里那些链接先做个粗筛，命中才值得读正文）。
+ */
+async function planRename(target: string, newName: string): Promise<refactor.RefPlan[]> {
+  const state = useWorkspace.getState()
+  let graph = state.graph
+  if (!graph) {
+    await state.refreshGraph()
+    graph = useWorkspace.getState().graph
+  }
+
+  const nodes = graph?.nodes ?? []
+  const notes = nodes.map(n => ({ path: n.path, title: n.title }))
+  // 刚建的文件可能还没进索引：补上，否则别人引用它时算不出目标
+  for (const extra of [state.activeNode(), { path: target, title: links.noteName(target) }]) {
+    if (extra && !notes.some(n => n.path === extra.path)) {
+      notes.push({ path: extra.path, title: extra.title })
+    }
+  }
+
+  const newStem = refactor.stemOf(newName)
+  const plans: refactor.RefPlan[] = []
+  for (const node of nodes) {
+    if (node.path === target) continue
+    if (!refactor.mayReference(node.links, node.path, target, notes)) continue
+
+    // 优先用缓冲区：用户屏幕上看到的就是要写回去的内容
+    let text = useWorkspace.getState().docs[node.path]?.content
+    if (text === undefined) {
+      try {
+        text = (await api.readFile(node.path)).content
+      } catch {
+        continue // 读不了就跳过，别让一次改名卡死在某个文件上
+      }
+    }
+    const edits = refactor.planText(text, node.path, target, newStem, notes)
+    if (edits.length) plans.push({ path: node.path, text, edits, target, newStem, notes })
+  }
+  return plans
+}
+
+/** 把方案落盘：改完名之后调用，失败一个不影响其它 */
+async function applyRenameRefs(plans: refactor.RefPlan[]) {
+  const root = useWorkspace.getState().root ?? undefined
+  let files = 0
+  let count = 0
+  let failed = 0
+
+  for (const plan of plans) {
+    const doc = useWorkspace.getState().docs[plan.path]
+    let text = plan.text
+    let edits = plan.edits
+    // 弹窗开着的时候这块缓冲区又被改了：按最新正文重算（解析仍用改名前的清单）
+    if (doc && doc.content !== plan.text) {
+      text = doc.content
+      edits = refactor.planText(text, plan.path, plan.target, plan.newStem, plan.notes)
+    }
+    const next = refactor.applyEdits(text, edits)
+    if (next === text) continue
+
+    try {
+      lastWrite.set(plan.path, Date.now())
+      if (doc) {
+        const res = await api.writeFile(plan.path, next, doc.encoding, doc.eol)
+        useWorkspace.setState(s => {
+          const cur = s.docs[plan.path]
+          if (!cur) return s
+          return {
+            docs: {
+              ...s.docs,
+              [plan.path]: {
+                ...cur,
+                content: next,
+                savedContent: next,
+                size: res.size,
+                mtime: res.mtime,
+                external: false,
+                gone: false
+              }
+            }
+          }
+        })
+        drafts.drop(plan.path)
+      } else {
+        const file = await api.readFile(plan.path)
+        await api.writeFile(plan.path, next, file.encoding, file.eol)
+      }
+      files++
+      count += edits.length
+      void search.updateIndex(plan.path, root).catch(() => {})
+    } catch {
+      failed++
+    }
+  }
+
+  useWorkspace.setState({
+    message: failed
+      ? `已更新 ${files} 个文件的 ${count} 处引用，${failed} 个写入失败`
+      : `已更新 ${files} 个文件的 ${count} 处引用`
+  })
+  queueGraph(0)
 }
 
 const AUTOSAVE_DELAY = 1200
@@ -504,6 +611,36 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     const to = joinPath(parentOf(path), name)
     if (to === path) return path
     const wasDir = findNode(get().tree, path)?.isDir ?? false
+
+    // 改名之前先算「谁引用了它」：改完名 [[旧名]] 就解析不到任何文件了
+    const plans = !wasDir && /\.md$/i.test(name) ? await planRename(path, name) : []
+
+    let withRefs = false
+    if (plans.length) {
+      const { files, edits } = refactor.planSummary(plans)
+      const preview = plans
+        .slice(0, 6)
+        .map(p => `· ${refactor.planLabel(p.path)}（${p.edits.length} 处）`)
+        .join('\n')
+      const more = plans.length > 6 ? `\n… 还有 ${plans.length - 6} 个文件` : ''
+      const dirty = plans.filter(p => {
+        const doc = get().docs[p.path]
+        return !!doc && doc.content !== doc.savedContent
+      }).length
+      const dirtyNote = dirty ? `\n\n其中 ${dirty} 个有未保存的修改，会一并保存。` : ''
+      const pick = await choose({
+        title: '同时更新引用',
+        message: `有 ${files} 个文件、共 ${edits} 处链接指向「${links.noteName(path)}」：\n\n${preview}${more}${dirtyNote}\n\n一起改成 [[${refactor.stemOf(name)}]] 吗？只改名的话，这些链接会变成未解析。`,
+        options: [
+          { label: '一起改', value: 'refs', primary: true },
+          { label: '只改名', value: 'none' }
+        ]
+      })
+      // 关掉对话框 = 这次改名算了
+      if (pick === null) return null
+      withRefs = pick === 'refs'
+    }
+
     try {
       await api.renameEntry(path, to)
     } catch (e) {
@@ -529,6 +666,9 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     // 光标跟着走（目录改名时连子树一起前缀映射）
     session.remapCursors(path, to)
     await get().refreshTree()
+
+    // 引用改写放在改名成功之后：先让文件真的换了名字，再动别人的正文
+    if (withRefs) await applyRenameRefs(plans)
 
     // 索引跟着改名走：目录改名整棵重灌（前缀映射太啰嗦），单文件挪一条
     if (wasDir) {

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import * as graphLib from '../lib/graph'
 import { resolveLink } from '../lib/links'
 import { useWorkspace } from '../store/workspace'
@@ -38,6 +38,11 @@ export function BacklinksPanel({ node }: Props) {
       })),
     [outgoing, node.path, notes]
   )
+
+  // 全库断链：放在最下面当「体检报告」，默认收起来
+  const broken = useMemo(() => graphLib.brokenLinks(graph, node), [graph, node])
+  const [showBroken, setShowBroken] = useState(false)
+  const brokenInThis = broken.filter(b => b.path === node.path).length
 
   return (
     <div className="side-scroll">
@@ -79,6 +84,41 @@ export function BacklinksPanel({ node }: Props) {
           <span className="link-line">{hit ? `第 ${link.line} 行` : '未解析'}</span>
         </button>
       ))}
+
+      <div className="side-label">
+        <span>断链</span>
+        <span className="side-count">{broken.length}</span>
+        {broken.length > 0 && (
+          <button
+            className="side-mini"
+            onClick={() => setShowBroken(v => !v)}
+            title={showBroken ? '收起断链清单' : '展开断链清单'}
+          >
+            {showBroken ? '−' : '＋'}
+          </button>
+        )}
+      </div>
+      {broken.length === 0 && <div className="side-empty">全库没有断链</div>}
+      {broken.length > 0 && !showBroken && (
+        <div className="side-empty">
+          共 {broken.length} 处
+          {brokenInThis > 0 ? `，其中 ${brokenInThis} 处在当前这篇` : ''}。点 ＋ 展开。
+        </div>
+      )}
+      {showBroken &&
+        broken.map(b => (
+          <button
+            key={`${b.path}-${b.line}-${b.target}`}
+            className="link-item missing"
+            title={`${b.path}\n第 ${b.line} 行 → ${b.target}`}
+            onClick={() => void openAt(b.path, b.line)}
+          >
+            <span className="link-name">{b.target}</span>
+            <span className="link-line">
+              {b.path === node.path ? `本篇 · 第 ${b.line} 行` : `${b.title} · ${b.line}`}
+            </span>
+          </button>
+        ))}
     </div>
   )
 }

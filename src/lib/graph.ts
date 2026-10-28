@@ -9,7 +9,7 @@
  * 否则刚打的 `[[新笔记]]` 要等自动保存 + 重灌索引才会出现在面板里。
  */
 import * as api from './api'
-import { parseLinks, resolveLink, toGraphLinks, type GraphLink } from './links'
+import { parseLinks, resolveLink, toGraphLinks, type GraphLink, type LinkKind } from './links'
 import { parseTags, splitFrontMatter } from './tags'
 
 export interface GNode {
@@ -131,6 +131,53 @@ export function around(graph: Graph | null, active: GNode | null): Around {
     }
   }
   return { outgoing: active.links, incoming }
+}
+
+/* ------------------------------------------------------------------ */
+/* 断链体检                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface BrokenLink {
+  /** 写这条链接的文件 */
+  path: string
+  name: string
+  title: string
+  line: number
+  target: string
+  kind: LinkKind
+}
+
+/**
+ * 全库指不到任何文件的链接。
+ *
+ * 改名 / 删文件 / 手误都会留下这种链接，双链用得越久越多，
+ * 所以给一个「一次看全部」的清单，点一下跳到出处去修。
+ */
+export function brokenLinks(graph: Graph | null, active?: GNode | null): BrokenLink[] {
+  const all = [...(graph?.nodes ?? [])]
+  if (active) {
+    const i = all.findIndex(n => n.path === active.path)
+    if (i >= 0) all[i] = active
+    else all.push(active)
+  }
+
+  const notes = all.map(n => ({ path: n.path, title: n.title }))
+  const out: BrokenLink[] = []
+  for (const node of all) {
+    for (const link of node.links) {
+      if (resolveLink(link.target, link.kind, node.path, notes)) continue
+      out.push({
+        path: node.path,
+        name: node.name,
+        title: node.title,
+        line: link.line,
+        target: link.target,
+        kind: link.kind
+      })
+    }
+  }
+  out.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+  return out
 }
 
 /* ------------------------------------------------------------------ */
