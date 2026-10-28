@@ -948,3 +948,197 @@ kbd {
   background: var(--text-dim);
   background-clip: padding-box;
 }
+
+/* ============ 命令面板 ============ */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(1px);
+}
+
+.palette {
+  width: min(620px, 92vw);
+  max-height: 62vh;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.palette-input {
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.palette-input::placeholder {
+  color: var(--text-dim);
+}
+
+.palette-list {
+  overflow: auto;
+  padding: 4px;
+}
+
+.palette-group {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.palette-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.palette-label {
+  flex: none;
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  opacity: 0.85;
+}
+
+.palette-hint {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.palette-empty {
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.palette-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.palette-foot-hint {
+  font-family: var(--mono);
+}
+
+/* ============ Markdown 大纲 ============ */
+.split.with-outline {
+  grid-template-columns: 208px 1fr;
+}
+
+.split.with-outline.with-preview {
+  grid-template-columns: 208px 1fr 1fr;
+}
+
+.outline {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.outline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+}
+
+.outline-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.outline-list {
+  overflow: auto;
+  padding: 4px 0 10px;
+}
+
+.outline-item {
+  display: block;
+  width: 100%;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outline-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.outline-item.l1 {
+  font-weight: 600;
+}
+
+.outline-item.l3,
+.outline-item.l4,
+.outline-item.l5,
+.outline-item.l6 {
+  color: var(--text-dim);
+}
+
+.outline-empty {
+  padding: 12px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}

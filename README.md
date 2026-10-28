@@ -5,6 +5,7 @@
 > 0.1.0 打底：编辑器、文件树、标签页、Markdown 分屏预览、编码安全读写跑通，
 > 插件系统走 wasmtime 沙箱（ABI v1），示例插件是 CSV 查看器。
 > 0.2.0 补齐文件树增删改、外部修改检测与崩溃恢复、WASM 插件市场。
+> 0.3.0 补上会话恢复、命令面板（`Ctrl+P`）与 Markdown 大纲。
 
 ## 为什么是这套栈
 
@@ -46,12 +47,15 @@ src/                  React 前端
   lib/lang.ts         扩展名 → CodeMirror 语言
   lib/path.ts         跨平台路径拼接 / 文件名校验
   lib/drafts.ts       未保存草稿兜底（localStorage）
+  lib/session.ts      会话：工作区 / 标签 / 光标位置
+  lib/outline.ts      Markdown 标题提取（跳过代码块）
   lib/watch.ts        文件监听事件订阅
   lib/market.ts       插件市场索引（多源 + 破缓存）
-  store/workspace.ts  标签页 / 文档 / 自动保存 / 外部修改 / 草稿恢复
+  store/workspace.ts  标签页 / 文档 / 自动保存 / 外部修改 / 草稿与会话恢复
   store/dialogs.ts    输入框 / 确认 / 多选一
   components/         Toolbar · FileTree · TabBar · EditorPane · PreviewPane · StatusBar
                       PluginsPanel（已安装 + 市场）· ExternalBanner · Dialogs
+                      CommandPalette（命令 + 文件搜索）· OutlinePanel（Markdown 大纲）
 plugins/csv-viewer/   示例插件（Rust cdylib → wasm32）
 wit/plugin.wit        ABI 的组件化目标形态（0.2.0）
 docs/plugin-abi.md    ABI v1 的具体约定
@@ -95,11 +99,21 @@ cd plugins/csv-viewer
 
 | 想做的事 | 怎么做 |
 | --- | --- |
+| 快速跳文件 | `Ctrl+P` 打开命令面板，输文件名的一部分就行（子序列匹配） |
+| 执行命令 | 同一个面板里也列着全部命令：新建、保存、切主题、开插件… |
 | 新建文件 / 文件夹 | 文件树右键，或 `Ctrl+N` / `Ctrl+Shift+N`，或侧栏顶部 `＋` `▤` |
 | 重命名 / 删除 | 文件树右键（删除有二次确认） |
 | 保存 | `Ctrl+S` 立即保存，停手 1.2 秒也会自动保存 |
-| 关掉有改动的标签 | 会问「保存并关闭 / 不保存」 |
+| 关掉当前标签 | `Ctrl+W` 或标签上的 `×`；有改动会问「保存并关闭 / 不保存」 |
+| 看长文结构 | 工具栏「大纲」，点标题直接跳过去 |
 | 找插件 | 工具栏「插件 → 插件市场」，也可以「本地安装」选一个 zip |
+
+### 会话恢复
+
+正常退出后再打开，会回到上次的文件夹、还开着的标签、以及每个文件的光标位置——
+这些记在 `localStorage`（`xnp:session:v1`），不占数据库。目录被移走或删掉时就当没有会话，
+老老实实显示欢迎页；单个文件没了只跳过那一个标签。
+光标跟着改名走（目录改名做前缀映射），关掉的标签连同光标一起清，不会越攒越多。
 
 ### 外部修改与崩溃恢复
 
@@ -120,14 +134,18 @@ cd plugins/csv-viewer
 - [x] 新建 / 重命名 / 删除（右键菜单 + 对话框，标签页同步改名）
 - [x] 外部修改检测（notify）、崩溃恢复
 
-**0.2.0（当前）**
+**0.2.0**
 - [x] 插件市场：`market/index.json` + 三源回退 + 时间戳破 CDN 缓存
 - [x] 安装 / 更新 / 卸载 / 本地 zip 安装（解包带 zip-slip 防护）
+
+**0.3.0（当前）**
+- [x] 会话恢复：工作区 / 标签 / 每个文件的光标位置
+- [x] 命令面板（`Ctrl+P`）：命令 + 文件子序列搜索，键盘上下选择
+- [x] Markdown 大纲：跳过代码块取标题，点击跳转
 - [ ] 插件 ABI 升级到 Component Model（`wit/plugin.wit`），保留 v1 兼容层
-- [ ] 多窗口、会话恢复
 
 **之后**
-- [ ] 命令面板、大纲、全文搜索（SQLite FTS5）
+- [ ] 全文搜索（SQLite FTS5）、多窗口
 - [ ] 标签编辑、双链
 
 ## 许可

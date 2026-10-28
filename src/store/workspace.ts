@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import * as api from '../lib/api'
 import * as drafts from '../lib/drafts'
+import * as session from '../lib/session'
 import { baseName, isUnder, joinPath, parentOf, validateName } from '../lib/path'
 import { ask, choose, confirm } from './dialogs'
 import { isMarkdown } from '../lib/lang'
@@ -32,6 +33,10 @@ interface WorkspaceState {
   active: string | null
   preview: boolean
   wrap: boolean
+  /** Markdown 大纲面板 */
+  outline: boolean
+  /** 一次性跳转指令：非空时编辑器把选区挪过去 */
+  jump: { path: string; pos: number; nonce: number } | null
   theme: Theme
   busy: boolean
   message: string
@@ -46,6 +51,8 @@ interface WorkspaceState {
   saveAll: () => Promise<void>
   togglePreview: () => void
   toggleWrap: () => void
+  toggleOutline: () => void
+  jumpTo: (path: string, pos: number) => void
   setTheme: (t: Theme) => void
   setMessage: (m: string) => void
   isDirty: (path: string) => boolean
@@ -60,7 +67,8 @@ interface WorkspaceState {
   reloadFromDisk: (path: string) => Promise<void>
   keepMine: (path: string) => Promise<void>
 
-  /* 崩溃恢复 */
+  /* 启动恢复 */
+  restoreSession: () => Promise<void>
   restoreDrafts: () => Promise<void>
 }
 
@@ -112,6 +120,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
   active: null,
   preview: true,
   wrap: true,
+  outline: false,
+  jump: null,
   theme: storedTheme(),
   busy: false,
   message: '',
@@ -206,6 +216,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     clearTimers(autosaveTimers, path)
     clearTimers(stashTimers, path)
     drafts.drop(path)
+    session.dropCursor(path)
 
     set((s) => {
       const tabs = s.tabs.filter(t => t !== path)
@@ -344,6 +355,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     })
 
     drafts.move(path, to)
+    // 光标跟着走（目录改名时连子树一起前缀映射）
+    session.remapCursors(path, to)
     await get().refreshTree()
     return to
   },
@@ -382,6 +395,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     })
 
     drafts.dropTree(path)
+    session.dropCursorTree(path)
     await get().refreshTree()
     return true
   },
@@ -462,6 +476,41 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     })
   },
 
+  /* ---------------- 启动恢复 ---------------- */
+
+  restoreSession: async () => {
+    const saved = session.readSession()
+    if (!saved || !saved.root) return
+    // 目录可能被移走 / 删掉了，读不出来就当没有会话，老老实实显示欢迎页
+    let tree: api.TreeNode[]
+    try {
+      tree = await api.readTree(saved.root)
+    } catch {
+      session.clearSession()
+      return
+    }
+
+    set({ root: saved.root, tree })
+    void api.watchRoot(saved.root)
+
+    // 逐个把标签打开：文件被删掉的那些，openFile 自己会跳过并提示
+    let restored = 0
+    for (const path of saved.tabs) {
+      await get().openFile(path)
+      if (get().docs[path]) restored++
+    }
+
+    const tabs = get().tabs
+    // preview 会被 openFile 按扩展名覆盖，所以放在循环之后再还原
+    set({
+      active: saved.active && tabs.includes(saved.active) ? saved.active : tabs[tabs.length - 1] ?? null,
+      preview: saved.preview,
+      wrap: saved.wrap,
+      outline: saved.outline,
+      message: restored ? `已恢复上次的 ${restored} 个标签` : ''
+    })
+  },
+
   /* ---------------- 崩溃恢复 ---------------- */
 
   restoreDrafts: async () => {
@@ -517,6 +566,9 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
 
   togglePreview: () => set((s) => ({ preview: !s.preview })),
   toggleWrap: () => set((s) => ({ wrap: !s.wrap })),
+  toggleOutline: () => set((s) => ({ outline: !s.outline })),
+  // nonce 是为了让"同一个位置跳两次"也能触发编辑器的 effect
+  jumpTo: (path, pos) => set((s) => ({ jump: { path, pos, nonce: (s.jump?.nonce ?? 0) + 1 } })),
   setTheme: (theme) => {
     applyTheme(theme)
     set({ theme })

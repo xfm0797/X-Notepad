@@ -5,6 +5,7 @@ import { basicSetup } from 'codemirror'
 import { indentWithTab } from '@codemirror/commands'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { languageFor } from '../lib/lang'
+import { cursorOf, rememberCursor } from '../lib/session'
 import { useWorkspace } from '../store/workspace'
 
 interface Props {
@@ -42,9 +43,11 @@ export function EditorPane({ path }: Props) {
   wrapRef.current = wrap
   pathRef.current = path
 
-  const makeState = (content: string) =>
+  const makeState = (content: string, forPath: string) =>
     EditorState.create({
       doc: content,
+      // 光标位置从会话里捞回来；文档比上次短了就贴到末尾
+      selection: { anchor: Math.min(cursorOf(forPath), content.length) },
       extensions: [
         basicSetup,
         keymap.of([
@@ -65,6 +68,9 @@ export function EditorPane({ path }: Props) {
           if (update.docChanged) {
             editRef.current(pathRef.current, update.state.doc.toString())
           }
+          if (update.selectionSet || update.docChanged) {
+            rememberCursor(pathRef.current, update.state.selection.main.head)
+          }
         }),
         EditorView.theme({
           '&': { height: '100%', fontSize: '13.5px' },
@@ -83,7 +89,7 @@ export function EditorPane({ path }: Props) {
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
-    const view = new EditorView({ state: makeState(''), parent: host })
+    const view = new EditorView({ state: makeState('', pathRef.current), parent: host })
     viewRef.current = view
     return () => {
       view.destroy()
@@ -101,7 +107,7 @@ export function EditorPane({ path }: Props) {
     if (prev && prev !== path) statesRef.current.set(prev, view.state)
 
     const cached = statesRef.current.get(path)
-    view.setState(cached ?? makeState(doc?.content ?? ''))
+    view.setState(cached ?? makeState(doc?.content ?? '', path))
     prevPathRef.current = path
     view.focus()
 
@@ -146,6 +152,17 @@ export function EditorPane({ path }: Props) {
     if (!view) return
     view.dispatch({ effects: wrapComp.reconfigure(wrap ? EditorView.lineWrapping : []) })
   }, [wrap, wrapComp])
+
+  // 大纲 / 命令面板要求跳到某处
+  const jump = useWorkspace(s => s.jump)
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || !jump || jump.path !== path) return
+    const pos = Math.min(Math.max(jump.pos, 0), view.state.doc.length)
+    view.dispatch({ selection: { anchor: pos }, scrollIntoView: true })
+    view.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jump])
 
   if (doc?.binary) {
     return <div className="pane-empty">这是一份二进制文件，0.1.0 暂不支持预览与编辑。</div>
