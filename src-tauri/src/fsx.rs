@@ -65,7 +65,7 @@ const SKIP_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
-fn is_skipped(name: &str) -> bool {
+pub(crate) fn is_skipped(name: &str) -> bool {
     SKIP_DIRS.contains(&name)
 }
 
@@ -140,12 +140,12 @@ pub fn ws_tree(root: String, depth: Option<u32>) -> Result<Vec<Node>, String> {
 }
 
 /// 判断是不是二进制（前 8KB 出现 0 字节即认为二进制）
-fn looks_binary(bytes: &[u8]) -> bool {
+pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|b| *b == 0)
 }
 
 /// 编码检测 + 解码，返回 (文本, 编码名)
-fn decode(bytes: &[u8]) -> (String, String) {
+pub(crate) fn decode(bytes: &[u8]) -> (String, String) {
     // 先按 UTF-8 严格试一次，绝大多数文件走这条快路
     if let Ok(s) = std::str::from_utf8(bytes) {
         return (s.to_string(), "UTF-8".to_string());

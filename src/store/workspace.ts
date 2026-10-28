@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import * as api from '../lib/api'
 import * as drafts from '../lib/drafts'
+import * as search from '../lib/search'
 import * as session from '../lib/session'
 import { baseName, isUnder, joinPath, parentOf, validateName } from '../lib/path'
 import { ask, choose, confirm } from './dialogs'
@@ -41,6 +42,17 @@ interface WorkspaceState {
   busy: boolean
   message: string
 
+  /* 全文搜索 */
+  searchOpen: boolean
+  searchQuery: string
+  searchCase: boolean
+  searchHits: search.SearchHit[]
+  searchBusy: boolean
+  searchTook: number
+  searchError: string
+  indexStatus: search.IndexStatus | null
+  indexing: boolean
+
   openFolder: () => Promise<void>
   refreshTree: () => Promise<void>
   openFile: (path: string) => Promise<void>
@@ -56,6 +68,15 @@ interface WorkspaceState {
   setTheme: (t: Theme) => void
   setMessage: (m: string) => void
   isDirty: (path: string) => boolean
+
+  /* 全文搜索 */
+  toggleSearch: () => void
+  setSearchQuery: (q: string) => void
+  setSearchCase: (v: boolean) => void
+  runSearch: () => Promise<void>
+  rebuildIndex: () => Promise<void>
+  refreshIndexStatus: () => Promise<void>
+  openHit: (hit: search.SearchHit) => Promise<void>
 
   /* 文件树操作 */
   newEntry: (dir: string, name: string, kind: 'file' | 'dir') => Promise<string | null>
@@ -83,6 +104,11 @@ const autosaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const stashTimers = new Map<string, ReturnType<typeof setTimeout>>()
 /** 自己刚写过的文件，短时间内忽略 watcher 事件 */
 const lastWrite = new Map<string, number>()
+
+/** 搜索框防抖 */
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+/** 请求序号：慢的那个回来时不能覆盖新结果 */
+let searchSeq = 0
 
 const AUTOSAVE_DELAY = 1200
 const STASH_DELAY = 600
@@ -125,6 +151,15 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
   theme: storedTheme(),
   busy: false,
   message: '',
+  searchOpen: false,
+  searchQuery: '',
+  searchCase: false,
+  searchHits: [],
+  searchBusy: false,
+  searchTook: 0,
+  searchError: '',
+  indexStatus: null,
+  indexing: false,
 
   isDirty: (path) => {
     const doc = get().docs[path]
@@ -142,6 +177,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       set({ tree, tabs: [], docs: {}, active: null, message: `已打开 ${root}` })
       // 桌面端顺带挂上文件监听，外部改动才能提示
       void api.watchRoot(root)
+      // 索引后台重建，不挡打开文件夹
+      void get().rebuildIndex()
     } catch (e) {
       set({ message: String(e).replace(/^Error:\s*/, '') })
     } finally {
@@ -291,6 +328,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
         message: `已保存 ${doc.name}`
       }))
       drafts.drop(target)
+      // 存完顺手把这篇重新灌进全文索引（失败不影响保存本身）
+      void search.updateIndex(target, get().root ?? undefined).catch(() => {})
       return true
     } catch (e) {
       set({ message: `保存失败：${String(e).replace(/^Error:\s*/, '')}` })
@@ -333,6 +372,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     }
     const to = joinPath(parentOf(path), name)
     if (to === path) return path
+    const wasDir = findNode(get().tree, path)?.isDir ?? false
     try {
       await api.renameEntry(path, to)
     } catch (e) {
@@ -358,6 +398,16 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     // 光标跟着走（目录改名时连子树一起前缀映射）
     session.remapCursors(path, to)
     await get().refreshTree()
+
+    // 索引跟着改名走：目录改名整棵重灌（前缀映射太啰嗦），单文件挪一条
+    if (wasDir) {
+      void get().rebuildIndex()
+    } else {
+      void search
+        .removeIndex(path)
+        .then(() => search.updateIndex(to, get().root ?? undefined))
+        .catch(() => {})
+    }
     return to
   },
 
@@ -397,6 +447,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
     drafts.dropTree(path)
     session.dropCursorTree(path)
     await get().refreshTree()
+    void search.removeIndex(path).catch(() => {})
     return true
   },
 
@@ -427,6 +478,11 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
             : s
         )
       }
+    }
+
+    // 索引跟着磁盘走：文件改了重灌，删了摘掉，目录事件 Rust 侧自己会忽略
+    for (const p of paths) {
+      void search.updateIndex(p, state.root).catch(() => {})
     }
   },
 
@@ -509,6 +565,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       outline: saved.outline,
       message: restored ? `已恢复上次的 ${restored} 个标签` : ''
     })
+    void get().rebuildIndex()
   },
 
   /* ---------------- 崩溃恢复 ---------------- */
@@ -562,6 +619,96 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       }))
     }
     set({ message: `已恢复 ${list.length} 篇草稿，记得保存` })
+  },
+
+  /* ---------------- 全文搜索 ---------------- */
+
+  toggleSearch: () => {
+    const open = !get().searchOpen
+    set({ searchOpen: open })
+    if (!open) return
+    void get().refreshIndexStatus()
+    // 关掉再打开时把上次的查询重跑一遍，别让面板看起来是空的
+    if (get().searchQuery.trim()) void get().runSearch()
+  },
+
+  setSearchQuery: (searchQuery) => {
+    set({ searchQuery })
+    if (searchTimer) clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => {
+      searchTimer = undefined
+      void get().runSearch()
+    }, 180)
+  },
+
+  setSearchCase: (searchCase) => {
+    set({ searchCase })
+    if (get().searchQuery.trim()) void get().runSearch()
+  },
+
+  runSearch: async () => {
+    const query = get().searchQuery.trim()
+    const seq = ++searchSeq
+    if (!query) {
+      set({ searchHits: [], searchTook: 0, searchError: '', searchBusy: false })
+      return
+    }
+    set({ searchBusy: true, searchError: '' })
+    const t0 = Date.now()
+    try {
+      const hits = await search.queryIndex(query, {
+        caseSensitive: get().searchCase,
+        root: get().root ?? undefined,
+        limit: 200
+      })
+      // 慢请求回来晚了就别覆盖新结果
+      if (seq !== searchSeq) return
+      set({ searchHits: hits, searchBusy: false, searchTook: Date.now() - t0 })
+    } catch (e) {
+      if (seq !== searchSeq) return
+      set({
+        searchHits: [],
+        searchBusy: false,
+        searchTook: 0,
+        searchError: String(e).replace(/^Error:\s*/, '')
+      })
+    }
+  },
+
+  rebuildIndex: async () => {
+    const root = get().root
+    if (!root) return
+    set({ indexing: true, searchError: '' })
+    try {
+      const report = await search.buildIndex(root)
+      set({
+        indexStatus: report,
+        indexing: false,
+        message: `已索引 ${report.files} 个文件（${report.ms ?? 0} ms）`
+      })
+      if (get().searchQuery.trim()) void get().runSearch()
+    } catch (e) {
+      set({
+        indexing: false,
+        searchError: String(e).replace(/^Error:\s*/, ''),
+        message: '建立索引失败'
+      })
+    }
+  },
+
+  refreshIndexStatus: async () => {
+    try {
+      const st = await search.indexStatus()
+      if (st) set({ indexStatus: st })
+    } catch {
+      /* 索引状态拿不到不影响搜索面板本身 */
+    }
+  },
+
+  openHit: async (hit) => {
+    await get().openFile(hit.path)
+    const content = get().docs[hit.path]?.content ?? ''
+    get().jumpTo(hit.path, search.offsetOf(content, hit.line, hit.column))
   },
 
   togglePreview: () => set((s) => ({ preview: !s.preview })),

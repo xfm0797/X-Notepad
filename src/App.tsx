@@ -7,6 +7,7 @@ import { FileTree } from './components/FileTree'
 import { OutlinePanel } from './components/OutlinePanel'
 import { PluginsPanel } from './components/PluginsPanel'
 import { PreviewPane } from './components/PreviewPane'
+import { SearchPanel } from './components/SearchPanel'
 import { StatusBar } from './components/StatusBar'
 import { TabBar } from './components/TabBar'
 import { Toolbar } from './components/Toolbar'
@@ -35,6 +36,9 @@ function Welcome() {
           <kbd>Ctrl</kbd> + <kbd>P</kbd> 命令面板，输入文件名可以直接跳过去
         </li>
         <li>
+          <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd> 全文搜索（搜正文，不只是文件名）
+        </li>
+        <li>
           <kbd>Ctrl</kbd> + <kbd>N</kbd> 新建文件，<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd> 新建文件夹
         </li>
         <li>文件树右键可以新建、重命名、删除；关了软件下次还回到这一页</li>
@@ -51,6 +55,7 @@ export default function App() {
   const doc = useWorkspace(s => (s.active ? s.docs[s.active] : undefined))
   const preview = useWorkspace(s => s.preview)
   const outline = useWorkspace(s => s.outline)
+  const searchOpen = useWorkspace(s => s.searchOpen)
   const openFolder = useWorkspace(s => s.openFolder)
   const jumpTo = useWorkspace(s => s.jumpTo)
 
@@ -60,7 +65,11 @@ export default function App() {
       const mod = e.ctrlKey || e.metaKey
       if (!mod) return
       const key = e.key.toLowerCase()
-      if (key === 'p') {
+      if (key === 'f' && e.shiftKey) {
+        // Ctrl+Shift+F：全文搜索（Ctrl+F 留给编辑器的查找）
+        e.preventDefault()
+        useWorkspace.getState().toggleSearch()
+      } else if (key === 'p') {
         // Ctrl+P / Ctrl+Shift+P 都开命令面板
         e.preventDefault()
         setPaletteOpen(true)
@@ -181,6 +190,7 @@ export default function App() {
         </section>
       </div>
       <StatusBar />
+      {searchOpen && <SearchPanel />}
       {pluginsOpen && <PluginsPanel onClose={() => setPluginsOpen(false)} />}
       {paletteOpen && (
         <CommandPalette

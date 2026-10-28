@@ -116,6 +116,14 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
       { id: 'refresh', group: '命令', label: '刷新文件树', run: () => w.refreshTree() },
       { id: 'plugins', group: '命令', label: '插件与插件市场', run: onOpenPlugins },
       {
+        id: 'search',
+        group: '命令',
+        label: '全文搜索',
+        hint: 'Ctrl+Shift+F',
+        run: () => w.toggleSearch()
+      },
+      { id: 'reindex', group: '命令', label: '重建搜索索引', run: () => w.rebuildIndex() },
+      {
         id: 'copy-path',
         group: '命令',
         label: '复制当前文件路径',

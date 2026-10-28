@@ -14,6 +14,8 @@ export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette }: Props) 
   const togglePreview = useWorkspace(s => s.togglePreview)
   const toggleWrap = useWorkspace(s => s.toggleWrap)
   const toggleOutline = useWorkspace(s => s.toggleOutline)
+  const toggleSearch = useWorkspace(s => s.toggleSearch)
+  const searchOpen = useWorkspace(s => s.searchOpen)
   const preview = useWorkspace(s => s.preview)
   const wrap = useWorkspace(s => s.wrap)
   const outline = useWorkspace(s => s.outline)
@@ -33,7 +35,14 @@ export function Toolbar({ onTogglePlugins, pluginsOpen, onOpenPalette }: Props) 
 
       <div className="toolbar-group">
         <button className="btn" onClick={onOpenPalette} title="命令面板 (Ctrl+P)：搜命令也能直接搜文件">
-          🔍 搜索
+          ⌘ 命令
+        </button>
+        <button
+          className={`btn${searchOpen ? ' on' : ''}`}
+          onClick={toggleSearch}
+          title="全文搜索 (Ctrl+Shift+F)：搜正文内容"
+        >
+          🔍 全文
         </button>
         <button className="btn" onClick={() => void openFolder()} title="打开文件夹 (选一个目录作为工作区)">
           📂 打开
