@@ -8,6 +8,7 @@
 > 0.3.0 补上会话恢复、命令面板（`Ctrl+P`）与 Markdown 大纲。
 > 0.4.0 上全文搜索：SQLite FTS5 索引 + 中文按字切分，`Ctrl+Shift+F` 直接搜正文。
 > 0.5.0 搜索结果按目录分组，加正则查找与全库替换，支持多窗口。
+> 0.6.0 补上双链与反向链接，标签写进 front-matter（面板可增删，跟着文件走）。
 
 ## 为什么是这套栈
 
@@ -45,6 +46,8 @@ src-tauri/            Rust 后端
   src/watch.rs        notify 文件监听 → 前端事件
   src/market.rs       插件市场：拉索引 / 下 zip / 解包安装
   src/search.rs       全文索引：FTS5 / 中文切分 / 命中摘要
+  src/graph.rs        双链与标签：从索引正文里扫 [[链接]] 与 #标签
+  src/graph.rs        双链与标签：从索引正文里扫 [[链接]] 与 #标签
 src/                  React 前端
   lib/api.ts          invoke 封装 + 浏览器演示工作区
   lib/lang.ts         扩展名 → CodeMirror 语言
@@ -55,12 +58,20 @@ src/                  React 前端
   lib/watch.ts        文件监听事件订阅
   lib/market.ts       插件市场索引（多源 + 破缓存）
   lib/search.ts       全文搜索封装（桌面端 invoke / 浏览器内存扫描）
+  lib/links.ts        双链解析 / 目标解析 / 预览锚点替换
+  lib/tags.ts         front-matter 与 #标签 的读写
+  lib/graph.ts        链接图 / 反链 / 标签索引（桌面端索引 / 演示模式内存扫描）
+  lib/links.ts        双链解析 / 目标解析 / 预览锚点替换
+  lib/tags.ts         front-matter 与 #标签 的读写
+  lib/graph.ts        链接图 / 反链 / 标签索引（桌面端索引 / 演示模式内存扫描）
   store/workspace.ts  标签页 / 文档 / 自动保存 / 外部修改 / 草稿与会话恢复
   store/dialogs.ts    输入框 / 确认 / 多选一
   components/         Toolbar · FileTree · TabBar · EditorPane · PreviewPane · StatusBar
                       PluginsPanel（已安装 + 市场）· ExternalBanner · Dialogs
                       CommandPalette（命令 + 文件搜索）· OutlinePanel（Markdown 大纲）
                       SearchPanel（全文搜索结果 + 索引状态）
+                      SidePanel（大纲 / 双链 / 标签）· LinkPicker（插入双链）
+                      SidePanel（大纲 / 双链 / 标签）· LinkPicker（插入双链）
 plugins/csv-viewer/   示例插件（Rust cdylib → wasm32）
 wit/plugin.wit        ABI 的组件化目标形态（0.2.0）
 docs/plugin-abi.md    ABI v1 的具体约定
@@ -158,6 +169,27 @@ cd plugins/csv-viewer
 - 会话按窗口分仓：主窗口继续用 `xnp:session:v1`（升级不丢），新窗口用 `xnp:session:v1:win-1`。
   从别的窗口带 `?root=…&file=…` 打开的那一次，直接进目标工作区，不读本窗口的旧会话。
 
+### 双链与标签
+
+笔记之间用 `[[想法]]` 互相指，左侧「双链」页签列出**谁引用了我**（反链）和**我引用了谁**（出链）。
+
+- 三种写法都认：`[[想法]]`、`[[想法|显示成这个]]`、`[[notes/想法#小节]]`；指向本地 `.md` 的普通
+  Markdown 链接（`[文字](notes/a.md)`）也算引用。代码块和行内代码里的 `[[...]]` 不算——
+  写文档时经常要举例子。
+- 解析顺序是「文件名 → 标题 → 路径后缀」，所以 `[[想法]]` 能命中 `notes/想法.md`，
+  `[[想法池]]` 也能命中标题叫「想法池」的笔记。
+- 出链指向不存在的笔记时显示成虚线，点一下问你要不要就地新建 —— 先写链接、之后再补内容。
+- 预览里的双链也能点。渲染前把 `[[x]]` 换成 `#xnp-wiki:` 锚点，所以不用给 comrak 开原始 HTML。
+- 图从全文索引的正文里扫（不重复读磁盘），几百篇毫秒级；**当前打开的那篇用缓冲区内容**，
+  刚敲下的 `[[新笔记]]` 立刻出现在面板里，不用等保存。
+
+标签有两个来源：front-matter 的 `tags`（`[a, b]`、`a, b`、`- a` 三种写法都认）和正文里的 `#标签`。
+
+- 面板里增删的是 **front-matter**，正文的 `#标签` 只读（那属于原文，要删去正文删），界面上用虚线框区分。
+- 写回保留文件原有编码与换行；如果这篇正文还有未保存的改动，标签改动只进缓冲区，
+  跟 1.2 秒后的自动保存一起落盘——否则「写标签」会把正在编辑的正文档回磁盘版本。
+- 「全部标签」按出现次数排序，点一个就地筛出带它的文件。
+
 ### 外部修改与崩溃恢复
 
 - **外部修改**：工作区开着 `notify` 监听。别的程序（或同步盘）改了当前打开的文件时，
@@ -190,15 +222,22 @@ cd plugins/csv-viewer
 - [x] 全文搜索：FTS5 索引 + 中文按字切分 + 前缀匹配，`Ctrl+Shift+F`
 - [x] 索引增量维护（保存 / 外部修改 / 改名 / 删除），命中摘要与行号跳转
 
-**0.5.0（当前）**
+**0.5.0**
 - [x] 搜索结果按目录分组、组头折叠，组间沿用相关度顺序
 - [x] 正则查找（不走 FTS5，直接扫正文）+ 全库替换：`dryRun` 先报数量、保留编码与换行、跳过脏文件
 - [x] 多窗口：`Ctrl+Alt+N` 新窗口，监听与会话按窗口隔离，「在新窗口打开当前文件」
+
+**0.6.0（当前）**
+- [x] 双链：`[[笔记]]` / `[[笔记|别名]]` / 本地 `.md` 链接，跳过代码块
+- [x] 反向链接面板：谁引用了我（带行号跳转）、出链（未解析可一键新建）
+- [x] 预览里的双链可点，走 `#xnp-wiki:` 锚点，不动 comrak 的 HTML 转义策略
+- [x] 标签：front-matter `tags` + 正文 `#标签`，面板增删写回 front-matter（保留编码换行）
 - [ ] 插件 ABI 升级到 Component Model（`wit/plugin.wit`），保留 v1 兼容层
 
 **之后**
-- [ ] 标签编辑、双链、正则替换的撤销
-- [ ] 搜索结果的上下文行（每处命中各一行，而不只是第一处）
+- [ ] 正则替换的撤销
+- [ ] 搜索结果每处命中各一行上下文
+- [ ] 链接图的可视化（局部图 / 孤立笔记）
 
 ## 许可
 
