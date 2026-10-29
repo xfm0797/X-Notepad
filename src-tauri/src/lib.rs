@@ -10,6 +10,7 @@ mod lines;
 mod markdown;
 mod market;
 mod meta;
+mod plugin_abi;
 mod plugins;
 mod replace_plan;
 mod search;
@@ -69,7 +70,10 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 search_db: Arc::new(Mutex::new(search_conn)),
-                plugins: plugins::PluginHost::new(plugin_dirs.clone()),
+                plugins: plugins::PluginHost::new(
+                    plugin_dirs.clone(),
+                    data_dir.join("plugin-settings.json"),
+                ),
                 watchers: Mutex::new(HashMap::new()),
                 plugin_dir: plugin_dirs[0].clone(),
                 snap_dir,

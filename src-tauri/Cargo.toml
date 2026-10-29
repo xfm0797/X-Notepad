@@ -1,6 +1,6 @@
 [package]
 name = "x-notepad"
-version = "0.10.0"
+version = "0.11.0"
 description = "X-Notepad - 笔记 + 代码编辑器"
 authors = ["XFM <https://www.lovou.pw>"]
 edition = "2021"
@@ -41,6 +41,10 @@ wasmtime = { version = "50", optional = true }
 [features]
 default = ["wasm-plugins"]
 wasm-plugins = ["dep:wasmtime"]
+
+[dev-dependencies]
+# 端到端测试里手写 v1 核心模块（WAT 文本 → wasm 字节）
+wat = "1"
 
 [profile.release]
 codegen-units = 1

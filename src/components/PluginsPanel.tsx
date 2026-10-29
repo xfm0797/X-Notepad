@@ -27,6 +27,11 @@ interface Props {
 
 type Tab = 'installed' | 'market'
 
+/** ABI 版本怎么念给用户听：v2 是组件，v1 是老的指针协议 */
+function abiLabel(abi: number): string {
+  return abi >= 2 ? 'ABI v2 · 组件' : 'ABI v1'
+}
+
 /** 源地址里最后一段，展示用 */
 function sourceLabel(url: string): string {
   if (!url) return '未加载'
@@ -39,7 +44,6 @@ function sourceLabel(url: string): string {
     return url
   }
 }
-
 export function PluginsPanel({ onClose }: Props) {
   const [tab, setTab] = useState<Tab>('installed')
   const [plugins, setPlugins] = useState<PluginInfo[]>([])
@@ -188,7 +192,7 @@ export function PluginsPanel({ onClose }: Props) {
             </div>
             <div className="plugin-desc">{p.description ?? '（无描述）'}</div>
             <div className="plugin-meta">
-              {p.extensions.join(' / ') || '任意文件'} · ABI v{p.abi}
+              {p.extensions.join(' / ') || '任意文件'} · {abiLabel(p.abi)}
               {p.author ? ` · ${p.author}` : ''}
             </div>
           </div>
@@ -290,7 +294,7 @@ export function PluginsPanel({ onClose }: Props) {
               </div>
               <div className="plugin-desc">{entry.description ?? '（无描述）'}</div>
               <div className="plugin-meta">
-                {(entry.extensions ?? []).join(' / ') || '任意文件'} · ABI v{entry.abi ?? 1}
+                {(entry.extensions ?? []).join(' / ') || '任意文件'} · {abiLabel(entry.abi ?? 1)}
                 {entry.author ? ` · ${entry.author}` : ''}
               </div>
             </div>
@@ -316,7 +320,7 @@ export function PluginsPanel({ onClose }: Props) {
       <div className="panel" onClick={e => e.stopPropagation()}>
         <div className="panel-head">
           <b>插件</b>
-          <span className="panel-sub">WASM 沙箱 · ABI v1</span>
+          <span className="panel-sub">WASM 沙箱 · ABI v1 / v2</span>
           <span className="panel-spacer" />
           <button className="icon-btn" onClick={onClose}>
             ×

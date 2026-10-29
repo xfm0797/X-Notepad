@@ -1,46 +1,63 @@
-// X-Notepad 插件 ABI v1
+// X-Notepad 插件 ABI v2（Component Model）
 //
-// 说明：0.1.0 用的是「核心 wasm」ABI（见 ../docs/plugin-abi.md），
-// 下面这份 WIT 是 0.2.0 计划迁移到的 Component Model 目标形态，
-// 保留在这里是为了让 ABI 的语义一眼可见。
+// v1 是手写的核心 wasm 协议：导出 `alloc` / `run` / `result_len`，靠线性内存
+// 传一段 JSON（见 docs/plugin-abi.md 的历史章节）。v2 用 WIT 描述接口，
+// 字符串与记录由组件模型的规范 ABI 负责编解码，插件侧 `wit-bindgen`，
+// 宿主侧 `wasmtime::component::bindgen!`。
+//
+// 宿主按文件头自动识别：`\0asm` + 版本 0x0001 是 v1 核心模块，
+// `\0asm` + 版本 0x000d 是 v2 组件，两代插件可以同时装着。
 
+package xnote:plugin@0.2.0;
+
+/// 宿主与插件之间传递的数据
 interface types {
-  /// 插件元信息
-  record manifest {
-    id: string,
-    name: string,
-    version: string,
-    author: option<string>,
-    description: option<string>,
-    extensions: list<string>,
-  }
-
-  /// 宿主传给插件的请求
+  /// 宿主发来的请求
   record request {
     /// 文件绝对路径
     path: string,
     /// 文件正文（已按原编码解码成 UTF-8）
     content: string,
-    /// 触发动作：parse / render / command
+    /// 触发动作：render / parse
     action: string,
   }
 
+  /// 插件返回的结果
   record response {
+    /// 是否成功
     ok: bool,
     /// 成功时是 HTML 或 JSON
     value: string,
-    /// 失败时是错误信息
+    /// 失败时的错误信息
     error: option<string>,
   }
 }
 
-world plugin {
-  /// 插件实现
-  export parse: func(req: request) -> response;
-  export render: func(payload: string) -> response;
+/// 宿主提供的能力。沙箱里只有这三个函数：没有文件系统、没有网络、
+/// 没有环境变量。需要新能力就得先在 WIT 里加一条显式导入。
+interface host {
+  /// 写一条日志，level 0=info 1=warn 2=error
+  log: func(level: u32, message: string);
 
-  /// 宿主提供
-  import log: func(level: u32, message: string);
-  import now-ms: func() -> u64;
-  import read-setting: func(key: string) -> option<string>;
+  /// 当前毫秒时间戳
+  now-ms: func() -> u64;
+
+  /// 读一条用户设置，没有这个键就返回 none
+  read-setting: func(key: string) -> option<string>;
+}
+
+/// 插件必须实现的接口
+interface api {
+  use types.{request, response};
+
+  /// 解析文件：返回 HTML 或 JSON 字符串
+  parse: func(req: request) -> response;
+
+  /// 把内容渲染成 HTML
+  render: func(payload: string) -> response;
+}
+
+world plugin {
+  import host;
+  export api;
 }
