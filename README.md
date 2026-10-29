@@ -13,6 +13,7 @@
 > 0.8.0 上知识图谱：`Ctrl+Shift+G` 把全库双链摊成一张图，断链画成虚线空心点。
 > 0.9.0 全库替换先留底再动手，替换完可以一键撤销。
 > 0.10.0 搜索结果每处命中各给一行上下文，点哪条跳哪条。
+> 0.11.0 插件 ABI 升到 Component Model：WIT 描述接口，v1 核心模块继续能跑。
 
 ## 为什么是这套栈
 
@@ -22,7 +23,7 @@
 | --- | --- | --- |
 | Scintilla（原生控件） | **CodeMirror 6** | Scintilla 只有 FFI 裸绑定（`scintilla-sys`，1.4 万下载、2025 年后停更），塞进 Tauri 窗口要给 Win32/Cocoa/GTK 各写一套挂载代码，React 那层 UI 还得给它让位。CM6 是视口渲染，语言包按需 `import()` |
 | 启动 <0.3s、内存 <50MB | **<1s / <120MB（目标）** | WebView2 初始化本身就 300ms 起，50MB 只有自绘原生 UI 才做得到；这两个指标和 WebView 路线物理冲突 |
-| 插件写成 TS 接口 + 同时支持 `.js` | **纯 WASM，ABI v1** | WebView 里跑的 `.js` 插件能拿到 `invoke`，沙箱形同虚设；统一成 wasm 后插件真的碰不到文件系统 |
+| 插件写成 TS 接口 + 同时支持 `.js` | **纯 WASM，ABI v2（组件）** | WebView 里跑的 `.js` 插件能拿到 `invoke`，沙箱形同虚设；统一成 wasm 后插件真的碰不到文件系统 |
 
 Markdown 用 comrak（GFM：表格/任务列表/删除线/脚注/自动链接）在 Rust 侧解析，
 前端只负责把 HTML 塞进 DOM，并且每次都过一遍 DOMPurify。
@@ -35,7 +36,7 @@ Markdown 用 comrak（GFM：表格/任务列表/删除线/脚注/自动链接）
 - Markdown：comrak 0.59（Rust）
 - 编码：chardetng + encoding_rs（UTF-8 / GBK / Shift-JIS … 读进来什么样、存回去还什么样）
 - 元数据：rusqlite（标签 / 收藏 / 最近打开）
-- 插件：wasmtime 50，核心 wasm ABI
+- 插件：wasmtime 50（Component Model + v1 核心模块兼容层），接口用 WIT 描述
 - 状态：zustand
 
 ## 目录
@@ -46,7 +47,8 @@ src-tauri/            Rust 后端
   src/fsx.rs          目录树 / 编码检测 / 原子写入
   src/markdown.rs     comrak GFM 渲染
   src/meta.rs         SQLite 元数据
-  src/plugins.rs      wasmtime 宿主（feature = "wasm-plugins"）
+  src/plugins.rs      wasmtime 宿主：组件 + 核心模块两代 ABI（feature = "wasm-plugins"）
+  src/plugin_abi.rs   ABI 版本协商（按 wasm 文件头分流）
   src/watch.rs        notify 文件监听 → 前端事件
   src/market.rs       插件市场：拉索引 / 下 zip / 解包安装
   src/search.rs       全文索引：FTS5 / 中文切分 / 命中摘要
@@ -77,9 +79,10 @@ src/                  React 前端
                       SearchPanel（全文搜索结果 + 索引状态）
                       SidePanel（大纲 / 双链 / 标签）· LinkPicker（插入双链）
                       GraphView（知识图谱浮层）
-plugins/csv-viewer/   示例插件（Rust cdylib → wasm32）
-wit/plugin.wit        ABI 的组件化目标形态（0.2.0）
-docs/plugin-abi.md    ABI v1 的具体约定
+plugins/csv-viewer/   示例插件（wit-bindgen → 组件）
+wit/plugin.wit        插件接口定义（ABI v2）
+tools/wrap-component/ 把核心模块包成组件（等价 wasm-tools component new）
+docs/plugin-abi.md    两代 ABI 的具体约定
 market/index.json     插件市场索引（客户端按 jsDelivr → GitHub → Gitee 顺序找）
 scripts/gen-icon.py   图标生成（无第三方依赖）
 scripts/pack-plugin.ps1  把插件目录打成市场用 zip
@@ -95,18 +98,40 @@ npm run build        # 前端产物
 npm run tauri:build  # 出安装包
 ```
 
-> 本机当前没有 `cargo` / `rustc`，所以 **Rust 侧只做了静态审查，未经编译验证**；
-> 第一次 `npm run tauri:dev` 或 CI 才是真正的编译校验。前端 `tsc --noEmit` 与 `vite build` 均通过。
+> 本机已配好 Rust（MSVC 工具链）与 `wasm32-unknown-unknown`，`cargo check` / `cargo test --lib`
+> 都在本地跑过；前端 `tsc --noEmit` 与 `vite build` 同样本地通过，CI 只做重复校验。
 
 ## 写一个插件
 
-插件就是一个 `wasm32` 模块，导出 `alloc` / `run` / `result_len`，可以从宿主 import
-`xnote.log` 和 `xnote.now_ms`。完整约定见 [`docs/plugin-abi.md`](docs/plugin-abi.md)。
+插件是一个 **WebAssembly 组件**，接口由 [`wit/plugin.wit`](wit/plugin.wit) 描述：
+
+```wit
+world plugin {
+  import host;                                  // log / now-ms / read-setting
+  export api;                                   // parse / render
+}
+```
+
+宿主把 `{action, path, content}` 交给 `render` 或 `parse`，插件返回 `response{ok, value, error}`。
+字符串和记录由组件模型的规范 ABI 搬运，插件里没有指针、没有手写 JSON——沙箱里也依然只有
+`host` 那三个函数，碰不到文件系统。完整约定见 [`docs/plugin-abi.md`](docs/plugin-abi.md)。
 
 ```bash
 cd plugins/csv-viewer
 ./build.sh          # Windows: build.bat
+# cargo build --target wasm32-unknown-unknown
+# tools/wrap-component 把它包成组件（等价 wasm-tools component new）
 ```
+
+用 Rust 写只需 `wit-bindgen`：
+
+```rust
+wit_bindgen::generate!({ path: "../../wit/plugin.wit", world: "plugin" });
+```
+
+不想用 Rust 也行：任何能产出组件的语言（`cargo component` / `jco` / TinyGo）都能写。
+老的核心 wasm 插件（`alloc` / `run` / `result_len`，ABI v1）不用重写——宿主按 wasm
+文件头自动分流，两代插件可以同时装着。
 
 产物 `plugin.wasm` 与 `plugin.json` 放在同一个目录，把这个目录整体放进：
 
@@ -308,13 +333,19 @@ cd plugins/csv-viewer
 - [x] 撤销逐文件核对「还是不是替换写下的样子」，后来又改过的跳过，删掉的不会凭空造回来
 - [x] 快照只留最近 20 份、撤一份删一份，连撤两次退到更早那次替换
 
-**0.10.0（当前）**
+**0.10.0**
 - [x] 搜索结果每处命中各一行上下文：行号 + 那一行原文 + 高亮，点哪条跳哪条
 - [x] 同一行多处命中合并成一条；每个文件最多 20 行，其余提示「还有 N 行」
 - [x] 超长行按 240 字符截断并在两端补「…」，压缩过的 JS / JSON 不会撑爆结果面板
-- [ ] 插件 ABI 升级到 Component Model（`wit/plugin.wit`），保留 v1 兼容层
+
+**0.11.0（当前）**
+- [x] 插件 ABI 升到 Component Model：`wit/plugin.wit` 定接口，`wasmtime::component::bindgen!` 生成宿主绑定
+- [x] 宿主按 wasm 文件头自动分流两代 ABI，v1 核心模块（`alloc`/`run`/`result_len`）继续能跑
+- [x] 示例插件改用 `wit-bindgen`，删掉手写指针协议与自搓 JSON 解析器；新增 `read-setting`
+- [x] `tools/wrap-component`：纯 Rust 把核心模块包成组件，构建链不再依赖外部 `wasm-tools`
 
 **之后**
+- [ ] 插件权限声明（`plugin.json` 里显式列出要用的 host 能力，安装时提示）
 - [ ] 搜索结果里按「区域」折叠：上下文相邻的行合成一段
 - [ ] 图谱里按标签聚簇、只画某个目录的子树
 - [ ] 链接图的可视化（局部图 / 孤立笔记）
