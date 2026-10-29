@@ -1,0 +1,9 @@
+[package]
+name = "wrap-component"
+version = "0.1.0"
+edition = "2021"
+description = "把 wit-bindgen 产出的核心 wasm 模块包成组件"
+
+[dependencies]
+wit-component = "0.247"
+anyhow = "1"

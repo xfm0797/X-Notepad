@@ -7,6 +7,8 @@ src-tauri/gen/schemas
 .DS_Store
 plugins/*/target
 plugins/*/*.wasm
+# 插件构建工具（wrap-component）的编译产物
+tools/*/target
 .workbuddy
 
 # 本地验证产物（vite 临时构建目录 + 冒烟脚本）

@@ -1,11 +1,12 @@
 [package]
 name = "csv-viewer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
 
-# 插件只依赖编译器自带的东西：没有 serde、没有 wasm-bindgen，
-# 说明"任何能编译到 wasm32 的语言都能写插件"不是空话。
+# ABI v2：由 wit-bindgen 按 ../../wit/plugin.wit 生成 guest 胶水。
+# 渲染逻辑放在 table.rs，不碰宿主，本机 `cargo test` 可以直接跑。
 [dependencies]
+wit-bindgen = { version = "0.57", default-features = false, features = ["macros", "realloc", "std"] }
