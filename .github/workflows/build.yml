@@ -37,7 +37,7 @@ jobs:
       # 只做编译校验（不打包），首次跑就能暴露 Rust 侧的类型问题。
       # continue-on-error + 下面那步：把编译器报错写成 check-run 注解。
       # 注解可以匿名读（`GET /repos/:o/:r/check-runs/:id/annotations`），
-      # 作业日志不行——本机没有 Rust 时这是唯一能看到具体错误的路子。
+      # 作业日志不行。
       - name: cargo check
         id: cargo
         shell: bash
@@ -70,3 +70,33 @@ jobs:
           print(f"错误行 {len(keep)} 行 / 日志 {len(lines)} 行")
           PY
           exit 1
+
+      # 插件 ABI 的单元测试：文件头识别、版本协商，以及现场拼一个 v1 核心模块跑兼容层。
+      # 示例插件的组件用例在没有 plugin.wasm 时自动跳过（wasm 产物不入库）。
+      - name: cargo test
+        if: steps.cargo.outcome == 'success'
+        shell: bash
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+  # 插件构建链单独一个作业：wit-bindgen 编到 wasm32、wrap-component 包成组件，
+  # 再确认产物真的是组件（文件头 0x000d）。这条链和主应用无关，放 Linux 上最便宜。
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            plugins/csv-viewer
+            tools/wrap-component
+
+      - name: 构建示例插件（wit-bindgen → 组件）
+        run: ./plugins/csv-viewer/build.sh
+
+      - name: 产物必须是组件
+        run: |
+          head -c 8 plugins/csv-viewer/plugin.wasm | od -An -tx1 | tr -d ' \n' | grep -qx '0061736d0d000100'
+          ls -l plugins/csv-viewer/plugin.wasm
