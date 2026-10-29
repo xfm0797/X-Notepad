@@ -184,24 +184,59 @@ export function SearchPanel() {
 
               {!isCollapsed &&
                 group.hits.map(hit => (
-                  <button
-                    key={hit.path}
-                    className="search-hit"
-                    title={hit.path}
-                    onClick={() => void openHit(hit)}
-                  >
-                    <span className="search-hit-head">
-                      <span className="search-hit-name">{hit.name}</span>
-                    </span>
-                    <span className="search-hit-snippet">
-                      {hit.snippet.map((seg, i) =>
-                        seg.hit ? <mark key={i}>{seg.text}</mark> : <span key={i}>{seg.text}</span>
+                  <div className="search-hit-wrap" key={hit.path}>
+                    <button
+                      className="search-hit"
+                      title={hit.path}
+                      onClick={() => void openHit(hit)}
+                    >
+                      <span className="search-hit-head">
+                        <span className="search-hit-name">{hit.name}</span>
+                      </span>
+                      {/* 有逐行上下文时，文件行就不再挤一段摘要，省得同一处看两遍 */}
+                      {!hit.spans.length && (
+                        <span className="search-hit-snippet">
+                          {hit.snippet.map((seg, i) =>
+                            seg.hit ? <mark key={i}>{seg.text}</mark> : <span key={i}>{seg.text}</span>
+                          )}
+                        </span>
                       )}
-                    </span>
-                    <span className="search-hit-meta">
-                      第 {hit.line} 行 · {hit.matches ? `${hit.matches} 处` : '路径命中'}
-                    </span>
-                  </button>
+                      <span className="search-hit-meta">
+                        {hit.spans.length
+                          ? `${hit.spanTotal} 行命中 · ${hit.matches || hit.spanTotal} 处`
+                          : `第 ${hit.line} 行 · ${hit.matches ? `${hit.matches} 处` : '路径命中'}`}
+                      </span>
+                    </button>
+
+                    {hit.spans.length > 0 && (
+                      <div className="search-spans">
+                        {hit.spans.map(span => (
+                          <button
+                            key={span.line}
+                            className="search-span"
+                            title={`跳到第 ${span.line} 行`}
+                            onClick={() => void openHit({ ...hit, line: span.line, column: span.column })}
+                          >
+                            <span className="search-span-no">{span.line}</span>
+                            <span className="search-span-text">
+                              {span.snippet.map((seg, i) =>
+                                seg.hit ? (
+                                  <mark key={i}>{seg.text}</mark>
+                                ) : (
+                                  <span key={i}>{seg.text}</span>
+                                )
+                              )}
+                            </span>
+                          </button>
+                        ))}
+                        {hit.spanTotal > hit.spans.length && (
+                          <div className="search-span-more">
+                            还有 {hit.spanTotal - hit.spans.length} 行没列出，点文件名看全部
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 ))}
             </div>
           )

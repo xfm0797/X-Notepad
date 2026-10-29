@@ -9,6 +9,7 @@
 //! 这样既能搜到连续汉字，又能靠末尾的 `*` 做前缀匹配（"笔记" → "笔记本"）。
 
 use crate::fsx;
+use crate::lines;
 use crate::snapshot;
 use crate::AppState;
 use regex::{Regex, RegexBuilder};
@@ -27,6 +28,10 @@ const MAX_HITS: u32 = 200;
 const MAX_SCAN_FILES: usize = 20_000;
 /// 只取正文前 20000 字符做摘要，避免大文件把内存拉满
 const BODY_WINDOW: i64 = 20_000;
+/// 每个文件最多带回多少行命中上下文（再多也没人一行行看）
+const MAX_SPANS: usize = 20;
+/// 折行前最多收集多少个命中区间（一个文件命中上万次的极端情况）
+const MAX_RANGES: usize = 5000;
 
 pub type Db = Arc<Mutex<Connection>>;
 
@@ -70,6 +75,20 @@ pub struct Hit {
     pub column: u32,
     /// 该文件里命中的总次数
     pub matches: u32,
+    /// 第一处命中的摘要（文件行里那一段）
+    pub snippet: Vec<Seg>,
+    /// 每个命中行一行上下文（最多 `MAX_SPANS` 行）
+    pub spans: Vec<SpanHit>,
+    /// 有命中的总行数，可能大于 `spans.len()`（超出的不传，省流量）
+    pub span_total: u32,
+}
+
+/// 一行命中：行号 + 这一行的原文切片（命中处高亮）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpanHit {
+    pub line: u32,
+    pub column: u32,
     pub snippet: Vec<Seg>,
 }
 
@@ -352,6 +371,22 @@ fn term_ranges(win: &str, terms: &[String], case_sensitive: bool) -> Vec<(usize,
 
 fn make_snippet(text: &str, anchor: usize, terms: &[String], case_sensitive: bool) -> Vec<Seg> {
     snippet_with(text, anchor, |win| term_ranges(win, terms, case_sensitive))
+}
+
+/// 区间折成「一行一条」的上下文。行窗口就是那一行的原文，
+/// 高亮区间已经换算成行内相对偏移，直接交给 assemble 切片。
+fn spans_of(text: &str, ranges: &[(usize, usize)]) -> (Vec<SpanHit>, u32) {
+    let (lines, total) = lines::group(text, ranges, MAX_SPANS);
+    let spans = lines
+        .iter()
+        .map(|l| SpanHit {
+            line: l.line,
+            column: l.column,
+            // 超长行被截过就补「…」，别让人以为一行就这么点
+            snippet: assemble(&text[l.start..l.end], l.ranges.clone(), l.cut_before, l.cut_after),
+        })
+        .collect();
+    (spans, total)
 }
 
 /// 正则版的摘要：窗口内所有匹配区间（跳过空匹配，不然会切出零宽片段）
@@ -673,6 +708,9 @@ fn query_impl(db: &Db, raw: &str, opts: &QueryOptions) -> Result<Vec<Hit>, Strin
         let anchor_pos = anchor.map(|(p, _)| p).unwrap_or(0);
         let (line, column) = line_col(&body, anchor_pos);
         let snippet = make_snippet(&body, anchor_pos, &terms, opts.case_sensitive);
+        // 命中位置全扫一遍：搜索结果里要一行条一条，不能只有第一处
+        let all = term_ranges(&body, &terms, opts.case_sensitive);
+        let (spans, span_total) = spans_of(&body, &all);
 
         hits.push(Hit {
             path,
@@ -682,6 +720,8 @@ fn query_impl(db: &Db, raw: &str, opts: &QueryOptions) -> Result<Vec<Hit>, Strin
             column,
             matches,
             snippet,
+            spans,
+            span_total,
         });
     }
 
@@ -756,12 +796,16 @@ fn regex_query_impl(db: &Db, pattern: &str, opts: &QueryOptions) -> Result<Vec<H
 
         let mut count = 0u32;
         let mut anchor: Option<usize> = None;
+        let mut all: Vec<(usize, usize)> = Vec::new();
         for m in re.find_iter(&body) {
             if m.end() <= m.start() {
                 continue;
             }
             if anchor.is_none() {
                 anchor = Some(m.start());
+            }
+            if all.len() < MAX_RANGES {
+                all.push((m.start(), m.end()));
             }
             count += 1;
             if count >= 9999 {
@@ -778,6 +822,7 @@ fn regex_query_impl(db: &Db, pattern: &str, opts: &QueryOptions) -> Result<Vec<H
 
         let anchor_pos = anchor.unwrap_or(0);
         let (line, column) = line_col(&body, anchor_pos);
+        let (spans, span_total) = spans_of(&body, &all);
         hits.push(Hit {
             path,
             name: title,
@@ -787,6 +832,8 @@ fn regex_query_impl(db: &Db, pattern: &str, opts: &QueryOptions) -> Result<Vec<H
             column,
             matches: count,
             snippet: regex_snippet(&body, anchor_pos, &re),
+            spans,
+            span_total,
         });
         if hits.len() >= limit {
             break;

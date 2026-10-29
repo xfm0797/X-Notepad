@@ -1863,3 +1863,69 @@ kbd {
   font-size: 13px;
   pointer-events: none;
 }
+
+/* 搜索结果：每个文件下面的逐行上下文 */
+.search-hit-wrap {
+  display: block;
+  border-top: 1px solid var(--border);
+}
+
+.search-hit-wrap .search-hit {
+  border-top: none;
+}
+
+.search-spans {
+  padding: 0 12px 6px 34px;
+}
+
+.search-span {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  text-align: left;
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.search-span:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.search-span-no {
+  padding-right: 6px;
+  border-right: 1px solid var(--border);
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.search-span-text {
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.search-span-text mark,
+.search-span-text mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: rgba(255, 196, 0, 0.32);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.search-span-more {
+  padding: 2px 6px 4px 42px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}

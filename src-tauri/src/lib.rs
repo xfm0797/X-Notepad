@@ -6,6 +6,7 @@
 
 mod fsx;
 mod graph;
+mod lines;
 mod markdown;
 mod market;
 mod meta;

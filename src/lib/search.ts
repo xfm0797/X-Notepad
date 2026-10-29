@@ -14,6 +14,14 @@ export interface SnippetSeg {
   hit: boolean
 }
 
+/** 一行命中：行号 + 这一行的原文（命中处高亮） */
+export interface SearchSpan {
+  /** 1 起算 */
+  line: number
+  column: number
+  snippet: SnippetSeg[]
+}
+
 export interface SearchHit {
   path: string
   name: string
@@ -24,7 +32,12 @@ export interface SearchHit {
   column: number
   /** 该文件里命中的总次数 */
   matches: number
+  /** 第一处命中的摘要 */
   snippet: SnippetSeg[]
+  /** 每个命中行一行上下文（最多 MAX_SPANS 行） */
+  spans: SearchSpan[]
+  /** 有命中的总行数，可能大于 spans.length */
+  spanTotal: number
 }
 
 export interface IndexStatus {
@@ -248,6 +261,146 @@ export function makeSnippet(
   return snippetBy(text, anchor, win => rangesIn(win, terms, caseSensitive), back, fwd)
 }
 
+/** 每个文件最多列多少行上下文，跟 Rust 侧 MAX_SPANS 对齐 */
+export const MAX_SPANS = 20
+/** 一行最多带多少字符的上下文，跟 Rust 侧 LINE_MAX 对齐 */
+const LINE_MAX = 240
+/** 截断时命中处前面留多少字符 */
+const LINE_HEAD = 60
+
+interface RawLine {
+  line: number
+  start: number
+  end: number
+  ranges: Range[]
+  cutBefore: boolean
+  cutAfter: boolean
+}
+
+/**
+ * 超长行按字符截一段（压缩过的 JSON / JS 一行能有几十万字符，
+ * 原样塞进结果就是几十兆的 payload）。返回（窗口、前面截了没、后面截了没）。
+ */
+function clipLine(
+  text: string,
+  ts: number,
+  te: number,
+  anchor: number
+): { start: number; end: number; cutBefore: boolean; cutAfter: boolean } {
+  const line = text.slice(ts, te)
+  const chars = Array.from(line)
+  if (chars.length <= LINE_MAX) return { start: ts, end: te, cutBefore: false, cutAfter: false }
+
+  const anchorChars = Array.from(text.slice(ts, Math.min(Math.max(anchor, ts), te))).length
+  const from = Math.max(0, anchorChars - LINE_HEAD)
+  const to = Math.min(chars.length, from + LINE_MAX)
+  const start = ts + chars.slice(0, from).join('').length
+  const end = ts + chars.slice(0, to).join('').length
+  return { start, end, cutBefore: start > ts, cutAfter: end < te }
+}
+
+/** 行窗口里按区间切片（区间已是行内相对偏移，可能重叠） */
+function segmentsOf(win: string, ranges: Range[]): SnippetSeg[] {
+  const segs: SnippetSeg[] = []
+  let cursor = 0
+  for (const [s, e] of ranges) {
+    if (s > cursor) segs.push({ text: win.slice(cursor, s), hit: false })
+    if (e > s) segs.push({ text: win.slice(s, e), hit: true })
+    cursor = Math.max(cursor, e)
+  }
+  if (cursor < win.length) segs.push({ text: win.slice(cursor), hit: false })
+  if (!segs.length) segs.push({ text: win, hit: false })
+  return segs
+}
+
+/**
+ * 把全文命中区间折成「一行一条」的上下文。
+ *
+ * 跟 `src-tauri/src/lines.rs` 的 `group` 一一对应：演示模式（浏览器 / jsdom）
+ * 和桌面端看到的行号、列号、缩进处理必须一模一样，否则同一份笔记两边对不上。
+ */
+export function spansOf(
+  text: string,
+  ranges: Range[],
+  max = MAX_SPANS
+): { spans: SearchSpan[]; spanTotal: number } {
+  if (!text || !ranges.length || max <= 0) return { spans: [], spanTotal: 0 }
+
+  const starts: number[] = [0]
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) starts.push(i + 1)
+
+  const sorted = ranges
+    .filter(([s, e]) => e > s && s < text.length)
+    .sort((a, b) => a[0] - b[0])
+
+  const raw: RawLine[] = []
+  let spanTotal = 0
+  // 上一段区间落在哪一行：超过上限后不再建窗口，但「这行算过了」得记住，
+  // 否则同一行的后几处命中会被数成好几行
+  let seen = -1
+  for (const [s, e] of sorted) {
+    // 二分找命中起点所在的行
+    let lo = 0
+    let hi = starts.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (starts[mid] <= s) lo = mid
+      else hi = mid - 1
+    }
+    const lineStart = starts[lo]
+    const lineEnd = lo + 1 < starts.length ? starts[lo + 1] - 1 : text.length
+    const end = Math.min(e, lineEnd)
+    if (end <= lineStart) continue
+
+    if (seen === lo) {
+      const last = raw[raw.length - 1]
+      if (last && last.line === lo + 1) {
+        const clampS = Math.max(s, last.start)
+        const clampE = Math.min(end, last.end)
+        if (clampE > clampS) last.ranges.push([clampS - last.start, clampE - last.start])
+      }
+      continue
+    }
+    seen = lo
+    spanTotal++
+    if (raw.length >= max) continue
+    // 行首缩进、行尾空白都去掉，上下文从正文开始
+    const lineText = text.slice(lineStart, lineEnd)
+    const lead = lineText.length - lineText.replace(/^[ \t]+/, '').length
+    const trimmed = lineText.replace(/[ \t\r]+$/, '')
+    const ts = lineStart + lead
+    const te = lineStart + Math.max(trimmed.length, lead)
+    const clip = clipLine(text, ts, te, s)
+    const item: RawLine = {
+      line: lo + 1,
+      start: clip.start,
+      end: clip.end,
+      ranges: [],
+      cutBefore: clip.cutBefore,
+      cutAfter: clip.cutAfter
+    }
+    const clampS = Math.max(s, clip.start)
+    const clampE = Math.min(end, clip.end)
+    if (clampE > clampS) item.ranges.push([clampS - clip.start, clampE - clip.start])
+    raw.push(item)
+  }
+
+  const spans: SearchSpan[] = raw.map(item => {
+    const win = text.slice(item.start, item.end)
+    const first = item.ranges[0]?.[0] ?? 0
+    const segs = segmentsOf(win, item.ranges)
+    if (item.cutBefore) segs[0] = { ...segs[0], text: `…${segs[0].text}` }
+    if (item.cutAfter) segs[segs.length - 1] = { ...segs[segs.length - 1], text: `${segs[segs.length - 1].text}…` }
+    return {
+      line: item.line,
+      // 列按字符算（不是 UTF-16 code unit），跟 Rust 侧一致
+      column: Array.from(win.slice(0, first)).length + 1,
+      snippet: segs
+    }
+  })
+  return { spans, spanTotal }
+}
+
 export function lineColOf(text: string, index: number): { line: number; column: number } {
   const before = text.slice(0, index)
   const line = before.split('\n').length
@@ -324,6 +477,7 @@ async function queryLocal(root: string, query: string, opts: QueryOptions): Prom
     if (!ranges.length) continue
     const at = ranges[0][0]
     const { line, column } = lineColOf(file.content, at)
+    const { spans, spanTotal } = spansOf(file.content, ranges)
     hits.push({
       path: file.path,
       name: baseName(file.path),
@@ -333,7 +487,9 @@ async function queryLocal(root: string, query: string, opts: QueryOptions): Prom
       matches: re ? countRegex(file.content, re) : ranges.length,
       snippet: re
         ? snippetBy(file.content, at, win => rangesInRegex(win, re))
-        : makeSnippet(file.content, at, terms, caseSensitive)
+        : makeSnippet(file.content, at, terms, caseSensitive),
+      spans,
+      spanTotal
     })
     if (hits.length >= limit) break
   }
