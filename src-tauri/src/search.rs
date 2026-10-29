@@ -9,6 +9,7 @@
 //! 这样既能搜到连续汉字，又能靠末尾的 `*` 做前缀匹配（"笔记" → "笔记本"）。
 
 use crate::fsx;
+use crate::snapshot;
 use crate::AppState;
 use regex::{Regex, RegexBuilder};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -840,6 +841,31 @@ pub struct ReplaceReport {
     pub changed: Vec<Replaced>,
     pub skipped: Vec<Skipped>,
     pub dry_run: bool,
+    /// 这次替换的快照 id；dryRun 或没能留底时为空（此时界面不显示「撤销」）
+    pub snapshot: Option<String>,
+    pub ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Restored {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoReport {
+    pub id: String,
+    /// 快照建立的时间（秒）
+    pub at: u64,
+    pub pattern: String,
+    pub replacement: String,
+    pub files: u32,
+    pub restored: Vec<Restored>,
+    pub skipped: Vec<Skipped>,
+    /// 盘上本来就是替换前内容的文件数（不用动，也不算失败）
+    pub already: u32,
     pub ms: u64,
 }
 
@@ -902,6 +928,7 @@ impl Matcher {
 
 fn replace_impl(
     db: &Db,
+    snap_dir: &Path,
     pattern: &str,
     replacement: &str,
     opts: &ReplaceOptions,
@@ -927,6 +954,12 @@ fn replace_impl(
     let mut changed: Vec<Replaced> = Vec::new();
     let mut skipped: Vec<Skipped> = Vec::new();
     let mut replacements = 0u32;
+    // 真要动盘才留底。建不起来（磁盘满 / 没权限）就照旧替换，只是这轮不能撤销
+    let mut snap = if opts.dry_run {
+        None
+    } else {
+        snapshot::Writer::new(snap_dir, pattern, replacement, opts.regex, opts.case_sensitive)
+    };
 
     for (path, root) in targets {
         if skip.contains(path.as_str()) {
@@ -945,9 +978,36 @@ fn replace_impl(
         if count == 0 {
             continue;
         }
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
 
         if !opts.dry_run {
+            // 先留底再动手：写盘崩了也能把原件找回来
+            let journaled = match snap.as_mut() {
+                None => true,
+                Some(w) => match fsx::text_bytes(&next, &encoding, &eol) {
+                    Ok(after) => match std::fs::read(&p) {
+                        Ok(before) => w.push(&path, &root, &name, &before, &after),
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                },
+            };
+            if !journaled {
+                // 留不了底就别改这个文件：撤销时漏掉它比不改更糟
+                skipped.push(Skipped {
+                    path,
+                    reason: "无法记录撤销快照".into(),
+                });
+                continue;
+            }
+
             if let Err(e) = fsx::write_text(&p, &next, &encoding, &eol) {
+                if let Some(w) = snap.as_mut() {
+                    w.drop_last();
+                }
                 skipped.push(Skipped { path, reason: e });
                 continue;
             }
@@ -958,17 +1018,11 @@ fn replace_impl(
         }
 
         replacements += count;
-        changed.push(Replaced {
-            name: p
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            path,
-            count,
-        });
+        changed.push(Replaced { name, path, count });
     }
 
     changed.sort_by(|a, b| a.path.cmp(&b.path));
+    let snapshot = snap.and_then(|w| w.finish(snapshot::KEEP));
 
     Ok(ReplaceReport {
         files: changed.len() as u32,
@@ -976,6 +1030,72 @@ fn replace_impl(
         changed,
         skipped,
         dry_run: opts.dry_run,
+        snapshot,
+        ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/* ------------------------------------------------------------------ */
+/* 撤销全库替换                                                         */
+/* ------------------------------------------------------------------ */
+
+fn undo_impl(dir: &Path, db: &Db, id: Option<String>) -> Result<UndoReport, String> {
+    let started = std::time::Instant::now();
+    let id = match id {
+        Some(id) => id,
+        None => snapshot::latest(dir).ok_or_else(|| "还没有可撤销的替换".to_string())?,
+    };
+    let loaded = snapshot::load(dir, &id)?;
+    // 只有「盘上还是替换后的样子」的文件才敢写回去，判断逻辑是纯函数
+    let plan = snapshot::plan(&loaded, |p| std::fs::read(p).ok());
+
+    let mut skipped: Vec<Skipped> = plan
+        .skipped
+        .into_iter()
+        .map(|s| Skipped {
+            path: s.path,
+            reason: s.reason,
+        })
+        .collect();
+    let mut restored: Vec<Restored> = Vec::new();
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        for i in plan.restore {
+            let item = &loaded.items[i];
+            let p = PathBuf::from(&item.path);
+            match fsx::write_bytes(&p, &item.before) {
+                Ok(()) => {
+                    if let Err(e) = index_one(&conn, &item.root, &p) {
+                        eprintln!("撤销后重灌索引 {} 失败：{e}", item.path);
+                    }
+                    restored.push(Restored {
+                        path: item.path.clone(),
+                        name: item.name.clone(),
+                    });
+                }
+                Err(e) => skipped.push(Skipped {
+                    path: item.path.clone(),
+                    reason: e,
+                }),
+            }
+        }
+    }
+    restored.sort_by(|a, b| a.path.cmp(&b.path));
+    skipped.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // 撤完就把这份快照收起来：连按两次「撤销」应该退到更早的那次替换，
+    // 而不是对着同一份快照原地打转
+    snapshot::remove(dir, &id);
+
+    Ok(UndoReport {
+        id,
+        at: loaded.manifest.at,
+        pattern: loaded.manifest.pattern,
+        replacement: loaded.manifest.replacement,
+        files: restored.len() as u32,
+        restored,
+        skipped,
+        already: plan.already,
         ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -1014,10 +1134,27 @@ pub async fn search_replace(
     options: Option<ReplaceOptions>,
 ) -> Result<ReplaceReport, String> {
     let db = state.search_db.clone();
+    let snap_dir = state.snap_dir.clone();
     let opts = options.unwrap_or_default();
-    tauri::async_runtime::spawn_blocking(move || replace_impl(&db, &pattern, &replacement, &opts))
+    tauri::async_runtime::spawn_blocking(move || {
+        replace_impl(&db, &snap_dir, &pattern, &replacement, &opts)
+    })
+    .await
+    .map_err(|e| format!("替换任务失败：{e}"))?
+}
+
+/// 撤销一次全库替换。不给 id 就撤最近那次；撤完这份快照就删掉，
+/// 所以连按两次会一路退回更早的替换。
+#[tauri::command]
+pub async fn search_replace_undo(
+    state: State<'_, AppState>,
+    id: Option<String>,
+) -> Result<UndoReport, String> {
+    let db = state.search_db.clone();
+    let snap_dir = state.snap_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || undo_impl(&snap_dir, &db, id))
         .await
-        .map_err(|e| format!("替换任务失败：{e}"))?
+        .map_err(|e| format!("撤销任务失败：{e}"))?
 }
 
 /// 单个文件重灌（保存、外部改动、改名之后调用）

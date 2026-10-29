@@ -108,6 +108,10 @@ interface WorkspaceState {
   searchReplace: string
   /** 替换进行中（替换要跑一会儿，按钮得禁用） */
   replacing: boolean
+  /** 最近一次全库替换留下的快照 id：有它才显示「撤销」 */
+  undoId: string | null
+  /** 撤销进行中 */
+  undoing: boolean
   searchHits: search.SearchHit[]
   searchBusy: boolean
   searchTook: number
@@ -124,6 +128,8 @@ interface WorkspaceState {
   runSearch: () => Promise<void>
   /** 全库替换（先 dry-run 报数量，确认后再落盘） */
   replaceAll: () => Promise<void>
+  /** 撤销最近一次全库替换（跳过替换后又改过的文件） */
+  undoReplace: () => Promise<void>
   /** silent=true 时不改状态栏提示（自动建索引时用） */
   rebuildIndex: (silent?: boolean) => Promise<void>
   refreshIndexStatus: () => Promise<void>
@@ -379,6 +385,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
   searchRegex: false,
   searchReplace: '',
   replacing: false,
+  undoId: null,
+  undoing: false,
   searchHits: [],
   searchBusy: false,
   searchTook: 0,
@@ -985,7 +993,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
         : ''
       const okay = await confirm({
         title: '全部替换',
-        message: `将在 ${dry.files} 个文件里替换 ${dry.replacements} 处：\n\n${preview}${more}${skippedNote}\n\n此操作没有撤销，确定替换吗？`,
+        message: `将在 ${dry.files} 个文件里替换 ${dry.replacements} 处：\n\n${preview}${more}${skippedNote}\n\n替换前会留一份底稿，替换完可以一键撤销。确定替换吗？`,
         confirmText: '替换',
         danger: true
       })
@@ -998,11 +1006,37 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => ({
       await get().reloadMany(report.changed.map(c => c.path))
       set({
         replacing: false,
-        message: `已替换 ${report.files} 个文件 · ${report.replacements} 处`
+        undoId: report.snapshot ?? null,
+        message: report.snapshot
+          ? `已替换 ${report.files} 个文件 · ${report.replacements} 处（可以撤销）`
+          : `已替换 ${report.files} 个文件 · ${report.replacements} 处 · 没能留底，无法撤销`
       })
       if (get().searchQuery.trim()) void get().runSearch()
     } catch (e) {
       set({ replacing: false, searchError: String(e).replace(/^Error:\s*/, '') })
+    }
+  },
+
+  undoReplace: async () => {
+    if (get().undoing) return
+    set({ undoing: true, searchError: '' })
+    try {
+      const report = await search.undoReplace(get().undoId ?? undefined)
+      await get().reloadMany(report.restored.map(r => r.path))
+      const skippedNote = report.skipped.length
+        ? ` · 跳过 ${report.skipped.length} 个（${report.skipped[0].reason}）`
+        : ''
+      set({
+        undoing: false,
+        undoId: null,
+        message: report.files
+          ? `已撤销替换：恢复 ${report.files} 个文件${skippedNote}`
+          : `没有文件需要恢复${skippedNote}`
+      })
+      if (get().searchQuery.trim()) void get().runSearch()
+      void queueGraph(400)
+    } catch (e) {
+      set({ undoing: false, searchError: String(e).replace(/^Error:\s*/, '') })
     }
   },
 

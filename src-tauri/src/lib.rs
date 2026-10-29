@@ -10,7 +10,9 @@ mod markdown;
 mod market;
 mod meta;
 mod plugins;
+mod replace_plan;
 mod search;
+mod snapshot;
 mod watch;
 mod windows;
 
@@ -28,6 +30,8 @@ pub struct AppState {
     pub watchers: Mutex<HashMap<String, notify::RecommendedWatcher>>,
     /// 用户插件目录（市场安装到这里）
     pub plugin_dir: std::path::PathBuf,
+    /// 全库替换的快照目录（撤销用的底稿）
+    pub snap_dir: std::path::PathBuf,
 }
 
 pub fn run() {
@@ -57,12 +61,17 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(d);
             }
 
+            // 替换快照目录：撤销全库替换时从这里读回原始字节
+            let snap_dir = data_dir.join("replace-snapshots");
+            let _ = std::fs::create_dir_all(&snap_dir);
+
             app.manage(AppState {
                 db: Mutex::new(conn),
                 search_db: Arc::new(Mutex::new(search_conn)),
                 plugins: plugins::PluginHost::new(plugin_dirs.clone()),
                 watchers: Mutex::new(HashMap::new()),
                 plugin_dir: plugin_dirs[0].clone(),
+                snap_dir,
             });
             Ok(())
         })
@@ -90,6 +99,7 @@ pub fn run() {
             search::search_build,
             search::search_query,
             search::search_replace,
+            search::search_replace_undo,
             search::search_update,
             search::search_remove,
             search::search_status,

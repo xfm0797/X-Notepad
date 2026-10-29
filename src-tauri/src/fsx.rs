@@ -238,24 +238,37 @@ pub(crate) fn write_text(
     encoding: &str,
     eol: &str,
 ) -> Result<SaveResult, String> {
+    write_bytes(path, &text_bytes(content, encoding, eol)?)?;
+    let meta = std::fs::metadata(path).map_err(|e| format!("保存后校验失败：{e}"))?;
+    Ok(SaveResult {
+        size: meta.len(),
+        mtime: mtime_secs(&meta),
+    })
+}
+
+/// 按编码 + 换行符把文本变成字节。
+///
+/// 单独抽出来是给全库替换用的：写盘和写进快照的「替换后」必须是同一份字节，
+/// 否则撤销时会觉得「文件被改过」而拒绝恢复。
+pub(crate) fn text_bytes(content: &str, encoding: &str, eol: &str) -> Result<Vec<u8>, String> {
+    encode(&apply_eol(content, eol), encoding)
+}
+
+/// 原始字节落盘（先写临时文件再原子替换）。
+/// 撤销替换走这条路：写回去的就是当初读到的那串字节，不再过一遍解码 / 编码。
+pub(crate) fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
     }
-    let bytes = encode(&apply_eol(content, eol), encoding)?;
     // 先写临时文件再原子替换：避免崩溃时留下半个文件
     let tmp = path.with_extension(format!(
         "{}.tmp",
         path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
     ));
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("写入失败：{e}"))?;
+    std::fs::write(&tmp, bytes).map_err(|e| format!("写入失败：{e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("保存失败：{e}")
-    })?;
-    let meta = std::fs::metadata(path).map_err(|e| format!("保存后校验失败：{e}"))?;
-    Ok(SaveResult {
-        size: meta.len(),
-        mtime: mtime_secs(&meta),
     })
 }
 

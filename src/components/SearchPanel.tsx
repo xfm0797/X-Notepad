@@ -21,6 +21,9 @@ export function SearchPanel() {
   const setReplaceText = useWorkspace(s => s.setSearchReplace)
   const replacing = useWorkspace(s => s.replacing)
   const replaceAll = useWorkspace(s => s.replaceAll)
+  const undoId = useWorkspace(s => s.undoId)
+  const undoing = useWorkspace(s => s.undoing)
+  const undoReplace = useWorkspace(s => s.undoReplace)
   const hits = useWorkspace(s => s.searchHits)
   const busy = useWorkspace(s => s.searchBusy)
   const took = useWorkspace(s => s.searchTook)
@@ -114,6 +117,16 @@ export function SearchPanel() {
             >
               {replacing ? '替换中…' : '全部替换'}
             </button>
+            {undoId && (
+              <button
+                className="btn"
+                disabled={undoing || replacing}
+                title="把上一次全库替换改回去（替换后又动过的文件会跳过）"
+                onClick={() => void undoReplace()}
+              >
+                {undoing ? '撤销中…' : '撤销'}
+              </button>
+            )}
           </div>
         )}
       </div>

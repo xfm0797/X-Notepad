@@ -166,6 +166,13 @@ export function CommandPalette({ onClose, onOpenPlugins }: Props) {
       },
       { id: 'reindex', group: '命令', label: '重建搜索索引', run: () => w.rebuildIndex() },
       {
+        id: 'undo-replace',
+        group: '命令',
+        label: '撤销上次全库替换',
+        hint: '只撤最近一次',
+        run: () => void w.undoReplace()
+      },
+      {
         id: 'graph',
         group: '命令',
         label: '知识图谱',

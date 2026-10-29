@@ -60,6 +60,22 @@ export interface ReplaceReport {
   changed: Array<{ path: string; name: string; count: number }>
   skipped: Array<{ path: string; reason: string }>
   dryRun: boolean
+  /** 这次替换的快照 id（撤销用）；dryRun 或没留底时为空 */
+  snapshot?: string | null
+  ms: number
+}
+
+export interface UndoReport {
+  id: string
+  /** 快照建立时间（秒） */
+  at: number
+  pattern: string
+  replacement: string
+  files: number
+  restored: Array<{ path: string; name: string }>
+  skipped: Array<{ path: string; reason: string }>
+  /** 盘上本来就是替换前内容的文件数 */
+  already: number
   ms: number
 }
 
@@ -326,6 +342,21 @@ async function queryLocal(root: string, query: string, opts: QueryOptions): Prom
   return hits
 }
 
+/**
+ * 浏览器演示模式没有 Rust 那套磁盘快照，就用内存里的一份底稿顶上：
+ * 结构跟真实快照一样（每个文件存替换前 / 替换后的正文），撤销的判断也一样。
+ */
+interface DemoSpan {
+  id: string
+  at: number
+  pattern: string
+  replacement: string
+  files: Array<{ path: string; name: string; before: string; after: string; encoding: string; eol: string }>
+}
+
+const demoSnaps: DemoSpan[] = []
+const DEMO_KEEP = 20
+
 async function replaceLocal(
   root: string,
   pattern: string,
@@ -342,6 +373,13 @@ async function replaceLocal(
   const skip = new Set(opts.skip ?? [])
   const changed: ReplaceReport['changed'] = []
   const skipped: ReplaceReport['skipped'] = []
+  const span: DemoSpan = {
+    id: String(Date.now()),
+    at: Math.round(Date.now() / 1000),
+    pattern,
+    replacement,
+    files: []
+  }
   let replacements = 0
 
   for (const file of await listDemoFiles(root)) {
@@ -355,18 +393,78 @@ async function replaceLocal(
     const next = opts.regex
       ? file.content.replace(re, replacement)
       : file.content.replace(re, () => replacement)
-    if (!opts.dryRun) await api.writeFile(file.path, next, file.encoding, file.eol)
+    if (!opts.dryRun) {
+      await api.writeFile(file.path, next, file.encoding, file.eol)
+      span.files.push({
+        path: file.path,
+        name: baseName(file.path),
+        before: file.content,
+        after: next,
+        encoding: file.encoding,
+        eol: file.eol
+      })
+    }
     replacements += count
     changed.push({ path: file.path, name: baseName(file.path), count })
   }
 
   changed.sort((a, b) => a.path.localeCompare(b.path))
+  if (span.files.length) {
+    demoSnaps.push(span)
+    while (demoSnaps.length > DEMO_KEEP) demoSnaps.shift()
+  }
   return {
     files: changed.length,
     replacements,
     changed,
     skipped,
     dryRun: !!opts.dryRun,
+    snapshot: span.files.length ? span.id : null,
+    ms: Date.now() - started
+  }
+}
+
+async function undoLocal(id?: string): Promise<UndoReport> {
+  const started = Date.now()
+  const at = id ? demoSnaps.findIndex(s => s.id === id) : demoSnaps.length - 1
+  const span = at >= 0 ? demoSnaps[at] : undefined
+  if (!span) throw new Error('还没有可撤销的替换')
+  demoSnaps.splice(at, 1)
+
+  const restored: UndoReport['restored'] = []
+  const skipped: UndoReport['skipped'] = []
+  let already = 0
+  for (const f of span.files) {
+    let now: string
+    try {
+      now = (await api.readFile(f.path)).content
+    } catch {
+      skipped.push({ path: f.path, reason: '文件已删除' })
+      continue
+    }
+    if (now === f.before) {
+      already++
+      continue
+    }
+    if (now !== f.after) {
+      // 替换之后又改过：硬写回去会把新改动冲掉
+      skipped.push({ path: f.path, reason: '替换后又被改过' })
+      continue
+    }
+    await api.writeFile(f.path, f.before, f.encoding, f.eol)
+    restored.push({ path: f.path, name: f.name })
+  }
+  restored.sort((a, b) => a.path.localeCompare(b.path))
+  skipped.sort((a, b) => a.path.localeCompare(b.path))
+  return {
+    id: span.id,
+    at: span.at,
+    pattern: span.pattern,
+    replacement: span.replacement,
+    files: restored.length,
+    restored,
+    skipped,
+    already,
     ms: Date.now() - started
   }
 }
@@ -388,6 +486,12 @@ export async function replaceAll(
 ): Promise<ReplaceReport> {
   if (!api.isTauri) return replaceLocal(opts.root ?? '/demo', pattern, replacement, opts)
   return invoke<ReplaceReport>('search_replace', { pattern, replacement, options: opts })
+}
+
+/** 撤销一次全库替换。不给 id 就撤最近那次，撤完这份快照就没了 */
+export async function undoReplace(id?: string): Promise<UndoReport> {
+  if (!api.isTauri) return undoLocal(id)
+  return invoke<UndoReport>('search_replace_undo', { id: id ?? null })
 }
 
 export async function buildIndex(root: string): Promise<IndexStatus> {
