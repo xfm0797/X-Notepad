@@ -43,6 +43,8 @@ export function GraphView() {
   /** 布局种子：点「重排」换一个，纠缠在一起的图可以抖开 */
   const [seed, setSeed] = useState(20261028)
   const [onlyIsolated, setOnlyIsolated] = useState(false)
+  /** 按主标签聚簇：把同一类笔记收成一团 */
+  const [cluster, setCluster] = useState(false)
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState('')
   const [hover, setHover] = useState<string | null>(null)
@@ -74,8 +76,8 @@ export function GraphView() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const built = useMemo(() => fg.buildGraph(graph, active, { ghosts }), [graph, activeSig, ghosts])
   const layout = useMemo(
-    () => fg.layoutGraph(built.nodes, built.edges, { width: W, height: H, seed }),
-    [built, seed]
+    () => fg.layoutGraph(built.nodes, built.edges, { width: W, height: H, seed, cluster }),
+    [built, seed, cluster]
   )
 
   const tags = useMemo(() => {
@@ -84,6 +86,10 @@ export function GraphView() {
     return Array.from(set).sort((a, b) => a.localeCompare(b))
   }, [built.nodes])
 
+  const clusters = useMemo(
+    () => (cluster ? fg.clustersOf(built.nodes, layout.pos) : []),
+    [cluster, built.nodes, layout.pos]
+  )
   const matched = useMemo(() => fg.matchNodes(built.nodes, query), [built.nodes, query])
   const tagMatched = useMemo(() => {
     if (!tag) return null
@@ -268,6 +274,18 @@ export function GraphView() {
           >
             孤立
           </button>
+          <button
+            className={`chip${cluster ? ' on' : ''}`}
+            disabled={!tags.length}
+            onClick={() => setCluster(v => !v)}
+            title={
+              tags.length
+                ? '同一主标签的笔记收成一团（没写标签的归「未分类」，断链归「未创建」）'
+                : '这些笔记还没有标签，先在 front-matter 里写 tags 再聚簇'
+            }
+          >
+            标签簇
+          </button>
           <button className="chip" onClick={() => setSeed(v => v + 1)} title="换一套初始摆位重新布局">
             重排
           </button>
@@ -293,6 +311,17 @@ export function GraphView() {
           onPointerLeave={() => setHover(null)}
         >
           <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
+            {clusters.map(cl => {
+              const r = Math.max(cl.radius + 12, 26)
+              return (
+                <g key={`cluster-${cl.key}`} className={`gcluster${cl.key === fg.UNCREATED ? ' ghost' : ''}`}>
+                  {cl.ids.length >= 2 && <circle cx={cl.x} cy={cl.y} r={r} />}
+                  <text x={cl.x} y={cl.y - r - 6}>
+                    {cl.key} · {cl.ids.length}
+                  </text>
+                </g>
+              )
+            })}
             {built.edges.map(e => {
               const a = offsets[e.source] ?? layout.pos[e.source]
               const b = offsets[e.target] ?? layout.pos[e.target]
@@ -319,10 +348,12 @@ export function GraphView() {
               const isActive = node.path !== null && node.path === activePath
               const r = node.ghost ? 4 : 5 + Math.min(9, Math.sqrt(node.degree) * 3)
               const showLabel = node.degree >= 2 || view.k > 1.4 || hot || matched.has(node.id)
+              // 聚簇时颜色跟着簇走（图例也跟着换），否则同一簇的点颜色乱七八糟，白聚了
+              const hue = fg.hueOf(cluster ? fg.clusterOf(node) : node.dir)
               return (
                 <g
                   key={node.id}
-                  className={`gnode h${fg.hueOf(node.dir)}${node.ghost ? ' ghost' : ''}${
+                  className={`gnode h${hue}${node.ghost ? ' ghost' : ''}${
                     isActive ? ' active' : ''
                   }${faded ? ' dim' : ''}${hot ? ' hot' : ''}`}
                   transform={`translate(${p.x},${p.y})`}
@@ -344,11 +375,17 @@ export function GraphView() {
         </svg>
 
         <div className="graph-legend">
-          {dirs.map(d => (
-            <span key={d} className={`legend-item h${fg.hueOf(d)}`}>
-              <i /> {d}
-            </span>
-          ))}
+          {cluster
+            ? clusters.slice(0, 6).map(cl => (
+                <span key={cl.key} className={`legend-item h${fg.hueOf(cl.key)}`}>
+                  <i /> {cl.key}（{cl.ids.length}）
+                </span>
+              ))
+            : dirs.map(d => (
+                <span key={d} className={`legend-item h${fg.hueOf(d)}`}>
+                  <i /> {d}
+                </span>
+              ))}
           {stats.ghosts > 0 && (
             <span className="legend-item ghost">
               <i /> 未创建（{stats.ghosts}）
@@ -359,7 +396,10 @@ export function GraphView() {
         {built.nodes.length === 0 && (
           <div className="graph-empty">这个工作区还没有 Markdown 笔记。写一篇，再用 [[双链]] 连起来。</div>
         )}
-        <div className="graph-hint">拖动空白处平移 · 滚轮缩放 · 拖动圆点摆位置 · 点圆点打开笔记</div>
+        <div className="graph-hint">
+          拖动空白处平移 · 滚轮缩放 · 拖动圆点摆位置 · 点圆点打开笔记
+          {cluster ? ' · 同一主标签的笔记已成簇，改 front-matter 里标签的顺序就换簇' : ''}
+        </div>
       </div>
     </div>
   )

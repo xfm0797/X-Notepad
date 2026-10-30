@@ -14,6 +14,10 @@ import { baseName } from './path'
 
 /** 幽灵节点的 id 前缀：这条链接指向的文件还不存在 */
 export const GHOST = 'xnp-ghost:'
+/** 一篇标签都没写的笔记落在这一簇 */
+export const UNTAGGED = '未分类'
+/** 断链（还没建的笔记）单独一簇，免得跟真笔记混在一起 */
+export const UNCREATED = '未创建'
 
 export interface VNode {
   /** 文件路径；幽灵节点是 `xnp-ghost:目标` */
@@ -200,6 +204,76 @@ export interface LayoutOptions {
   /** 迭代次数越多越散得开，但 200 次之后基本看不出差别 */
   iterations?: number
   seed?: number
+  /** 按标签聚簇：同主标签的笔记向自己的簇心收拢 */
+  cluster?: boolean
+}
+
+/* ------------------------------------------------------------------ */
+/* 聚类                                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 一个节点归哪一簇：取**主标签**（front-matter 里写的第一个），
+ * 没写标签的归「未分类」，断链归「未创建」。
+ *
+ * 一篇笔记只能在一簇里，所以不按「它有哪几个标签」做多重归属——
+ * 那样同一个点要画好几遍，边也跟着重复。想换簇就调 front-matter 里标签的顺序。
+ */
+export function clusterOf(node: VNode): string {
+  if (node.ghost) return UNCREATED
+  return node.tags[0] ?? UNTAGGED
+}
+
+export interface ClusterGroup {
+  key: string
+  ids: string[]
+}
+
+/** 分簇：簇按大小降序，同样大按名字排，保证同一份数据永远同一个顺序 */
+export function clusterGroups(nodes: VNode[]): ClusterGroup[] {
+  const map = new Map<string, string[]>()
+  for (const n of nodes) {
+    const key = clusterOf(n)
+    const hit = map.get(key)
+    if (hit) hit.push(n.id)
+    else map.set(key, [n.id])
+  }
+  return Array.from(map, ([key, ids]) => ({ key, ids })).sort(
+    (a, b) => b.ids.length - a.ids.length || a.key.localeCompare(b.key)
+  )
+}
+
+/** 布好局之后每一簇的位置：质心 + 最远半径（画淡圈、贴标签用） */
+export interface ClusterPatch extends ClusterGroup {
+  x: number
+  y: number
+  radius: number
+}
+
+export function clustersOf(nodes: VNode[], pos: Record<string, Point>): ClusterPatch[] {
+  const out: ClusterPatch[] = []
+  for (const group of clusterGroups(nodes)) {
+    let sx = 0
+    let sy = 0
+    let n = 0
+    for (const id of group.ids) {
+      const p = pos[id]
+      if (!p) continue
+      sx += p.x
+      sy += p.y
+      n++
+    }
+    if (!n) continue
+    const x = sx / n
+    const y = sy / n
+    let radius = 0
+    for (const id of group.ids) {
+      const p = pos[id]
+      if (p) radius = Math.max(radius, Math.hypot(p.x - x, p.y - y))
+    }
+    out.push({ ...group, x, y, radius })
+  }
+  return out
 }
 
 export interface Layout {
@@ -220,6 +294,9 @@ function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
 }
+
+/** 簇引力相对全局向心力的倍数：调到 1 附近簇会散开，太大又挤成一坨 */
+const CLUSTER_PULL = 3.2
 
 export function layoutGraph(
   nodes: VNode[],
@@ -243,11 +320,45 @@ export function layoutGraph(
   const ys = new Float64Array(n)
   const dx = new Float64Array(n)
   const dy = new Float64Array(n)
-  for (let i = 0; i < n; i++) {
-    const r = R * Math.sqrt((i + 0.5) / n)
-    const a = i * golden + rng() * 0.4
-    xs[i] = Math.cos(a) * r
-    ys[i] = Math.sin(a) * r
+
+  // 聚簇：簇心摆在一个圆上，簇内再铺一层小螺旋。初始位置就分了组，
+  // 力导向只是把每组收得更紧，不会出现「同标签的两点从对角出发、最后各奔东西」
+  const clusterOn = !!opts.cluster
+  const clusterIdx = new Int32Array(n).fill(-1)
+  let centers: Array<[number, number]> = []
+  if (clusterOn) {
+    const groups = clusterGroups(nodes)
+    const m = groups.length
+    const Rc = Math.min(width, height) * 0.3
+    const slot = new Map<string, number>()
+    groups.forEach((g, gi) => slot.set(g.key, gi))
+    centers =
+      m === 1
+        ? [[0, 0]]
+        : groups.map((_, gi) => {
+            const a = (gi / m) * Math.PI * 2 - Math.PI / 2
+            return [Math.cos(a) * Rc, Math.sin(a) * Rc] as [number, number]
+          })
+    const filled = new Map<string, number>()
+    for (let i = 0; i < n; i++) {
+      const key = clusterOf(nodes[i])
+      const gi = slot.get(key) ?? 0
+      clusterIdx[i] = gi
+      const j = filled.get(key) ?? 0
+      filled.set(key, j + 1)
+      const size = Math.max(groups[gi]?.ids.length ?? 1, 1)
+      const spread = Rc * 0.55 * Math.sqrt((j + 0.5) / size)
+      const a = j * golden + rng() * 0.3
+      xs[i] = (centers[gi]?.[0] ?? 0) + Math.cos(a) * spread
+      ys[i] = (centers[gi]?.[1] ?? 0) + Math.sin(a) * spread
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const r = R * Math.sqrt((i + 0.5) / n)
+      const a = i * golden + rng() * 0.4
+      xs[i] = Math.cos(a) * r
+      ys[i] = Math.sin(a) * r
+    }
   }
 
   // 理想边长：面积均摊到每个点，再乘个系数（太小会挤成一团，太大跑出画布）
@@ -300,6 +411,17 @@ export function layoutGraph(
       dy[a] -= uy
       dx[b] += ux
       dy[b] += uy
+    }
+
+    // 簇引力：同主标签的点被拉向簇心。比全局向心力硬，才压得住点之间的斥力
+    if (clusterOn) {
+      const stiff = 0.02 * k * CLUSTER_PULL
+      for (let i = 0; i < n; i++) {
+        const c = centers[clusterIdx[i]]
+        if (!c) continue
+        dx[i] += (c[0] - xs[i]) * stiff
+        dy[i] += (c[1] - ys[i]) * stiff
+      }
     }
 
     // 向心力：只靠斥力的话整张图会慢慢炸开

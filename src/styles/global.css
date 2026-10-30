@@ -1788,6 +1788,39 @@ kbd {
   stroke-dasharray: 3 3;
 }
 
+/* 聚簇时每簇的淡圈与簇名：当背景画，别抢走圆点的注意力 */
+.gcluster circle {
+  fill: color-mix(in srgb, var(--accent) 6%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 22%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 4 6;
+  pointer-events: none;
+}
+
+.gcluster text {
+  fill: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-anchor: middle;
+  opacity: 0.75;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.gcluster.ghost circle {
+  stroke-dasharray: 2 4;
+  fill: none;
+}
+
+.gcluster.ghost text {
+  font-style: italic;
+  opacity: 0.6;
+}
+
 .gnode.ghost .glabel {
   fill: hsl(214 10% 55%);
   font-style: italic;

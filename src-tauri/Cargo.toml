@@ -1,6 +1,6 @@
 [package]
 name = "x-notepad"
-version = "0.13.0"
+version = "0.14.0"
 description = "X-Notepad - 笔记 + 代码编辑器"
 authors = ["XFM <https://www.lovou.pw>"]
 edition = "2021"
