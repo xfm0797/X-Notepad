@@ -20,6 +20,7 @@
 | `author` | | 作者 |
 | `extensions` | | 负责的扩展名，仅展示用 |
 | `abi` | | 默认 1（核心模块）；组件插件填 2 |
+| `permissions` | | 插件要用的宿主能力，如 `["log","read-setting"]`；只用于安装前提示，装了以包里的 `plugin.json` 为准 |
 | `homepage` | | 项目主页 |
 
 ## 发布一个新插件
@@ -37,3 +38,7 @@ powershell -File scripts/pack-plugin.ps1 -PluginDir plugins/csv-viewer
 
 注意：客户端会校验包里的 `plugin.json`，`id` 与索引不一致会拒绝安装，`entry` 指向的
 wasm 不存在也会拒绝——所以别只改索引不改包。
+
+`permissions` 也建议跟包里写一致：客户端装完会拿索引和包里的清单对一遍，包申请得更多时
+会在界面上提示用户「实际申请得更多」。作者自己漏写权限时插件跑起来会直接被拒（报错会
+说缺哪个），别指望宿主兜底。

@@ -14,6 +14,7 @@
 > 0.9.0 全库替换先留底再动手，替换完可以一键撤销。
 > 0.10.0 搜索结果每处命中各给一行上下文，点哪条跳哪条。
 > 0.11.0 插件 ABI 升到 Component Model：WIT 描述接口，v1 核心模块继续能跑。
+> 0.12.0 插件权限声明：`plugin.json` 列清要用的 host 能力，装之前先给你看。
 
 ## 为什么是这套栈
 
@@ -49,6 +50,7 @@ src-tauri/            Rust 后端
   src/meta.rs         SQLite 元数据
   src/plugins.rs      wasmtime 宿主：组件 + 核心模块两代 ABI（feature = "wasm-plugins"）
   src/plugin_abi.rs   ABI 版本协商（按 wasm 文件头分流）
+  src/plugin_perm.rs  插件能力（permissions）声明与校验（纯逻辑）
   src/watch.rs        notify 文件监听 → 前端事件
   src/market.rs       插件市场：拉索引 / 下 zip / 解包安装
   src/search.rs       全文索引：FTS5 / 中文切分 / 命中摘要
@@ -65,6 +67,7 @@ src/                  React 前端
   lib/outline.ts      Markdown 标题提取（跳过代码块）
   lib/watch.ts        文件监听事件订阅
   lib/market.ts       插件市场索引（多源 + 破缓存）
+  lib/plugin-perm.ts  插件能力的展示名 / 安装提示 / 越权比对（纯函数）
   lib/search.ts       全文搜索封装（桌面端 invoke / 浏览器内存扫描）
   lib/links.ts        双链解析 / 目标解析 / 预览锚点替换
   lib/tags.ts         front-matter 与 #标签 的读写
@@ -115,6 +118,24 @@ world plugin {
 宿主把 `{action, path, content}` 交给 `render` 或 `parse`，插件返回 `response{ok, value, error}`。
 字符串和记录由组件模型的规范 ABI 搬运，插件里没有指针、没有手写 JSON——沙箱里也依然只有
 `host` 那三个函数，碰不到文件系统。完整约定见 [`docs/plugin-abi.md`](docs/plugin-abi.md)。
+
+**能力要声明**。能看见 `host` 不等于能用：`plugin.json` 里写清要哪几个，宿主每个函数进来
+先查清单，**默认一件都不给**。
+
+```json
+{ "abi": 2, "permissions": ["log", "read-setting"] }
+```
+
+| 能力 | 作用 | 被拒时 |
+| --- | --- | --- |
+| `log` | 打日志 | 这条日志丢掉 |
+| `now-ms` | 取时间戳 | 拿到 `0` |
+| `read-setting` | 读 `plugin-settings.json` | 拿到 `none` |
+
+越权一次，整次运行就失败，报错直接写缺哪个能力——不糊弄成空结果。安装前也会提示：市场
+条目带权限清单，本地 zip 走 `plugin_peek_zip` 只读包里的清单与 wasm 文件头，确认框里先
+把「它将拿到什么」摆出来；索引和包对不上时，装完会明确告诉你「实际申请得更多」。
+v1 老插件没这个字段，仍按历史行为给 `log` + `now-ms`，不会突然跑不了。
 
 ```bash
 cd plugins/csv-viewer
@@ -338,14 +359,20 @@ wit_bindgen::generate!({ path: "../../wit/plugin.wit", world: "plugin" });
 - [x] 同一行多处命中合并成一条；每个文件最多 20 行，其余提示「还有 N 行」
 - [x] 超长行按 240 字符截断并在两端补「…」，压缩过的 JS / JSON 不会撑爆结果面板
 
-**0.11.0（当前）**
+**0.11.0**
 - [x] 插件 ABI 升到 Component Model：`wit/plugin.wit` 定接口，`wasmtime::component::bindgen!` 生成宿主绑定
 - [x] 宿主按 wasm 文件头自动分流两代 ABI，v1 核心模块（`alloc`/`run`/`result_len`）继续能跑
 - [x] 示例插件改用 `wit-bindgen`，删掉手写指针协议与自搓 JSON 解析器；新增 `read-setting`
 - [x] `tools/wrap-component`：纯 Rust 把核心模块包成组件，构建链不再依赖外部 `wasm-tools`
 
+**0.12.0（当前）**
+- [x] 插件权限声明：`permissions` 白名单，缺省一件不给（v1 保留 `log` + `now-ms` 的老规矩）
+- [x] 宿主逐个 host 函数校验，越权即整次失败；报错点名缺哪个能力、怎么补
+- [x] 安装前提示：市场索引带权限、本地 zip 先 `plugin_peek_zip` 再确认，装完核对实际权限
+- [x] 插件面板按能力显示标签，清单里拼错的能力名单独标红
+- [x] 示例插件用上 `read-setting`（`maxRows` 调表格行数上限），顺带把权限写进清单
+
 **之后**
-- [ ] 插件权限声明（`plugin.json` 里显式列出要用的 host 能力，安装时提示）
 - [ ] 搜索结果里按「区域」折叠：上下文相邻的行合成一段
 - [ ] 图谱里按标签聚簇、只画某个目录的子树
 - [ ] 链接图的可视化（局部图 / 孤立笔记）

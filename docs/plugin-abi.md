@@ -25,6 +25,37 @@ world plugin {
 插件**只能**看到 `host` 那三个函数，拿不到文件系统、网络、环境变量。要加能力，
 先在 WIT 里写一条显式导入，宿主再决定给不给。
 
+### 权限（permissions）
+
+能看见接口不等于能用。**默认一件都不给**，插件得在 `plugin.json` 的 `permissions`
+里显式列出来，宿主的每个 host 函数进来先查一遍这份清单：
+
+| 能力键 | 对应 | 被拒时插件看到什么 |
+| --- | --- | --- |
+| `log` | `host.log` | 这条日志直接丢掉 |
+| `now-ms` | `host.now-ms` | 返回 `0` |
+| `read-setting` | `host.read-setting` | 永远返回 `none` |
+
+只要这次运行里发生过一次越权调用，**整次调用就算失败**，并把缺哪个能力写进报错：
+
+```
+插件调用了没声明的能力：read-setting（在 plugin.json 的 permissions 里补上再重装）
+```
+
+这么设计是因为插件作者自己写清单：清单没声明却在调，要么是漏写、要么是它压根没打算
+老实交代——两种都不该悄悄给个空结果糊过去。
+
+缺省规则分两代，别记混：
+
+| 清单 | v2（组件） | v1（核心模块） |
+| --- | --- | --- |
+| 没有 `permissions` 字段 | 什么都不给 | 给 `log` + `now-ms`（历史行为，免得老插件突然跑不了） |
+| `"permissions": []` | 明确什么都不要 | 同上，什么都不要 |
+| `"permissions": ["log"]` | 只给 `log` | 只给 `log` |
+
+写错的能力名（比如 `network`）不会生效，但会单独列出来：前端在插件条目上标红，
+`plugin_run` 也会往 stderr 打一行提醒。大小写和首尾空格会被规整掉，重复项去重。
+
 ### 入参
 
 宿主调用时把请求拆成 `action` / `path` / `content`：
@@ -120,19 +151,26 @@ cd plugins/csv-viewer
 {
   "id": "csv-viewer",
   "name": "CSV 查看器",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "XFM",
   "description": "把 CSV / TSV 渲染成 HTML 表格（ABI v2 组件）",
   "abi": 2,
   "entry": "plugin.wasm",
-  "extensions": [".csv", ".tsv"]
+  "extensions": [".csv", ".tsv"],
+  "permissions": ["log", "read-setting"]
 }
 ```
 
 - `entry`：相对插件目录的 wasm 文件名
 - `abi`：声明的版本，**只用于展示和市场筛选**，真正跑哪条路以文件头为准
+- `permissions`：要用的宿主能力，不写就等于不要（v1 除外，见上文缺省规则）
 - 只有两种情况会直接拒绝：声明了宿主不认识的版本（如 v3），或者声明 v2 却给了 v1 核心模块
   （报错会提示用 `wrap-component` 重新打包）
+
+安装时会先读一遍包里的清单再问人：市场条目带 `permissions` 就直接显示；本地 zip 走
+`plugin_peek_zip`，不落盘、只读清单与 wasm 文件头，确认框里列出这个插件将要拿到哪些能力。
+索引里的 `permissions` 只是给人看的提示，装了之后以包里清单为准——两者不一致时前端会
+明确提示「实际申请得更多」。
 
 宿主扫描 `plugins/*/plugin.json`，同 id 以先扫到的目录为准（用户目录在安装包资源目录之前）。
 
@@ -141,10 +179,11 @@ cd plugins/csv-viewer
 `read-setting(key)` 读的是应用数据目录下的 `plugin-settings.json`：
 
 ```json
-{ "theme": "dark", "csv.maxRows": "500" }
+{ "maxRows": "200" }
 ```
 
 扁平对象，键值都是字符串；文件不存在时一律返回 `none`。插件拿不到别的任何宿主状态。
+读它需要 `read-setting` 权限——示例插件用它调表格最多渲染多少行（默认 500，上限 5000）。
 
 ## 测试
 
@@ -152,6 +191,9 @@ cd plugins/csv-viewer
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
-- `plugin_abi` 的用例覆盖文件头识别、版本协商、声明不符
-- `plugins::tests` 会真的跑两个插件：一个现场用 WAT 拼出来的 v1 核心模块（验证兼容层），
-  以及 `plugins/csv-viewer/plugin.wasm`（验证组件路径）。示例没编译时第二条自动跳过
+- `plugin_abi`：文件头识别、版本协商、声明不符
+- `plugin_perm`：缺省规则、大小写去重、未知键、报错文案
+- `market::tests`：范围从 zip 里读清单——平铺 / 套一层目录、缺 wasm、声明与实际 ABI 不符
+- `plugins::tests` 会真的跑插件：现场用 WAT 拼一个 v1 核心模块（验证兼容层）、
+  一个不给权限的 v1/v2 插件（验证拒绝路径），以及 `plugins/csv-viewer/plugin.wasm`
+  （验证组件路径）。示例没编译时依赖它的用例自动跳过
