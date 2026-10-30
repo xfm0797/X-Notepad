@@ -17,6 +17,7 @@
 > 0.12.0 插件权限声明：`plugin.json` 列清要用的 host 能力，装之前先给你看。
 > 0.13.0 搜索结果按区域折叠：相邻的命中连成一段，中间断开的标出跳了多少行。
 > 0.14.0 图谱按标签聚簇：`标签簇` 一开，同一主标签的笔记自动收成一团。
+> 0.15.0 插件包签名：Ed25519 签内容摘要，装之前先验，内容对不上直接拒。
 
 ## 为什么是这套栈
 
@@ -53,6 +54,7 @@ src-tauri/            Rust 后端
   src/plugins.rs      wasmtime 宿主：组件 + 核心模块两代 ABI（feature = "wasm-plugins"）
   src/plugin_abi.rs   ABI 版本协商（按 wasm 文件头分流）
   src/plugin_perm.rs  插件能力（permissions）声明与校验（纯逻辑）
+  src/plugin_sig.rs   插件包签名：内容摘要 + ed25519 验签（纯逻辑）
   src/watch.rs        notify 文件监听 → 前端事件
   src/market.rs       插件市场：拉索引 / 下 zip / 解包安装
   src/search.rs       全文索引：FTS5 / 中文切分 / 命中摘要
@@ -70,6 +72,7 @@ src/                  React 前端
   lib/watch.ts        文件监听事件订阅
   lib/market.ts       插件市场索引（多源 + 破缓存）
   lib/plugin-perm.ts  插件能力的展示名 / 安装提示 / 越权比对（纯函数）
+  lib/plugin-sig.ts   签名状态文案 / 公钥规整 / 指纹（纯函数）
   lib/search.ts       全文搜索封装（桌面端 invoke / 浏览器内存扫描）
   lib/links.ts        双链解析 / 目标解析 / 预览锚点替换
   lib/tags.ts         front-matter 与 #标签 的读写
@@ -88,9 +91,11 @@ plugins/csv-viewer/   示例插件（wit-bindgen → 组件）
 wit/plugin.wit        插件接口定义（ABI v2）
 tools/wrap-component/ 把核心模块包成组件（等价 wasm-tools component new）
 docs/plugin-abi.md    两代 ABI 的具体约定
+docs/plugin-sign.md   插件包签名的格式与判定规则
 market/index.json     插件市场索引（客户端按 jsDelivr → GitHub → Gitee 顺序找）
 scripts/gen-icon.py   图标生成（无第三方依赖）
-scripts/pack-plugin.ps1  把插件目录打成市场用 zip
+scripts/pack-plugin.ps1  把插件目录打成市场用 zip（可顺带签名）
+scripts/sign-plugin.mjs  生成签名密钥 / 给插件目录签名 / 验签（Node 自带 ed25519）
 ```
 
 ## 开发
@@ -138,6 +143,18 @@ world plugin {
 条目带权限清单，本地 zip 走 `plugin_peek_zip` 只读包里的清单与 wasm 文件头，确认框里先
 把「它将拿到什么」摆出来；索引和包对不上时，装完会明确告诉你「实际申请得更多」。
 v1 老插件没这个字段，仍按历史行为给 `log` + `now-ms`，不会突然跑不了。
+
+**打包要签名**。签名证明「装上的确实是你打的那个包」，跟能力清单是两件事：
+
+```bash
+node scripts/sign-plugin.mjs keygen --id 我的keyid --out ~/.xnp-signing/me.json   # 一次性
+scripts/pack-plugin.ps1 -PluginDir plugins/csv-viewer -KeyPath ~/.xnp-signing/me.json
+```
+
+`signature.json` 签的是「按文件名排序的内容摘要」，不是 zip 字节——所以包可以重打、
+可以进 CDN。客户端装之前先验：内容或签名对不上**直接拒绝**；没签名或不认识的密钥只提示。
+官方公钥编译在客户端，别人的公钥让用户在「插件 → 签名密钥」里加。细节见
+[`docs/plugin-sign.md`](docs/plugin-sign.md)。
 
 ```bash
 cd plugins/csv-viewer
@@ -397,10 +414,16 @@ wit_bindgen::generate!({ path: "../../wit/plugin.wit", world: "plugin" });
 - [x] 20 行配额只数命中行，补进来的上下文不吃配额
 - [x] 切段用纯函数 `foldSpans`（行号连续即同段），宿主与演示模式共用一份扁平数据
 
-**0.14.0（当前）**
+**0.14.0**
 - [x] 图谱按标签聚簇：取主标签（front-matter 第一个）归簇，没标签归「未分类」、断链归「未创建」
 - [x] 布局加簇引力 + 簇心摆成圆，聚簇同样可复现，同簇平均距离不到跨簇一半
 - [x] 聚簇时颜色与图例换成簇，簇带淡圈与「名字 · 篇数」；没标签时开关置灰并说明原因
+
+**0.15.0（当前）**
+- [x] 插件包签名：`signature.json` 里 ed25519 签「按文件名排序的内容摘要」，重打包不影响、改一个字节就露
+- [x] 解包之前先验：内容或签名对不上直接拒绝安装；没签名 / 密钥不认识只提示，不挡路
+- [x] 官方公钥编译在客户端，第三方公钥在「签名密钥」里自己加；装完再对目录算一次摘要，防装完被改
+- [x] `scripts/sign-plugin.mjs`：生成密钥 / 签名 / 验签，`pack-plugin.ps1` 打包时顺带签
 
 **之后**
 - [ ] 图谱只画某个目录的子树

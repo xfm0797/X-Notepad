@@ -30,11 +30,27 @@
 cd plugins/csv-viewer && ./build.sh
 
 # 2. 打包：只把 plugin.json 和 wasm 放进去，别把 target/ 打进去
-powershell -File scripts/pack-plugin.ps1 -PluginDir plugins/csv-viewer
+#    带 -KeyPath 就顺带签名（签名在压缩前做，摘要算的是进包的那几个文件）
+scripts/pack-plugin.ps1 -PluginDir plugins/csv-viewer -KeyPath ~/.xnp-signing/xfm-official.json
 
 # 3. 把 dist-plugins/csv-viewer.zip 传到 Release，保证和 index.json 里的 url 对得上
 # 4. 在 index.json 里加/改条目，然后 push
 ```
+
+## 签名
+
+包里的 `signature.json` 用 ed25519 签「内容摘要」：
+
+```json
+{ "algo": "ed25519", "keyId": "xfm-official", "digest": "…64 位…", "signature": "…128 位…" }
+```
+
+客户端装之前先验：验不过直接拒绝；没签名、或 `keyId` 不在信任名单里只提示。官方公钥编译在
+客户端里（`src-tauri/src/plugin_sig.rs` 的 `OFFICIAL_KEYS`），私钥由维护者离线保管，
+**不要提交进仓库**。第三方作者要签名，让用户在「插件 → 签名密钥」里贴公钥即可。
+
+格式与判定规则见 [`../docs/plugin-sign.md`](../docs/plugin-sign.md)。
+
 
 注意：客户端会校验包里的 `plugin.json`，`id` 与索引不一致会拒绝安装，`entry` 指向的
 wasm 不存在也会拒绝——所以别只改索引不改包。
