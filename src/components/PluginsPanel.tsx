@@ -8,10 +8,15 @@ import {
   peekPluginZip,
   pickPluginZip,
   pluginDir,
+  pluginKeyAdd,
+  pluginKeyRemove,
+  pluginKeys,
   runPlugin,
   uninstallPlugin,
   type PluginInfo,
-  type PluginPeek
+  type PluginPeek,
+  type SignatureInfo,
+  type TrustedKey
 } from '../lib/api'
 import {
   compareVersion,
@@ -21,6 +26,16 @@ import {
   type MarketEntry
 } from '../lib/market'
 import { extraPerms, installMessage, permLabel, permMeta, unknownPerms } from '../lib/plugin-perm'
+import {
+  keyFingerprint,
+  normalizePubkey,
+  removableKey,
+  sigFatal,
+  sigHint,
+  sigNotice,
+  sigSummary,
+  sigTone
+} from '../lib/plugin-sig'
 import { confirm } from '../store/dialogs'
 import { useWorkspace } from '../store/workspace'
 
@@ -28,11 +43,21 @@ interface Props {
   onClose: () => void
 }
 
-type Tab = 'installed' | 'market'
+type Tab = 'installed' | 'market' | 'keys'
 
 /** ABI 版本怎么念给用户听：v2 是组件，v1 是老的指针协议 */
 function abiLabel(abi: number): string {
   return abi >= 2 ? 'ABI v2 · 组件' : 'ABI v1'
+}
+
+/** 签名状态小标签：颜色随状态变，悬停给出 keyId 与摘要 */
+function SigChip({ info }: { info: SignatureInfo | null | undefined }) {
+  if (!info) return null
+  return (
+    <span className={`sig-chip ${sigTone(info.status)}`} title={sigHint(info)}>
+      {sigSummary(info)}
+    </span>
+  )
 }
 
 /** 一行能力标签：没申请就写「无」，认不出的键单独标出来 */
@@ -94,6 +119,12 @@ export function PluginsPanel({ onClose }: Props) {
   const [running, setRunning] = useState('')
   const [output, setOutput] = useState('')
 
+  const [keys, setKeys] = useState<TrustedKey[]>([])
+  const [newKeyId, setNewKeyId] = useState('')
+  const [newKeyPub, setNewKeyPub] = useState('')
+  const [newKeyLabel, setNewKeyLabel] = useState('')
+  const [keyError, setKeyError] = useState('')
+
   const doc = useWorkspace(s => (s.active ? s.docs[s.active] : undefined))
   const active = useWorkspace(s => s.active)
 
@@ -101,6 +132,10 @@ export function PluginsPanel({ onClose }: Props) {
     const list = await listPlugins()
     setPlugins(list)
     setDir(await pluginDir())
+  }, [])
+
+  const refreshKeys = useCallback(async () => {
+    setKeys(await pluginKeys())
   }, [])
 
   const loadMarket = useCallback(async () => {
@@ -119,7 +154,8 @@ export function PluginsPanel({ onClose }: Props) {
 
   useEffect(() => {
     void refreshPlugins()
-  }, [refreshPlugins])
+    void refreshKeys()
+  }, [refreshPlugins, refreshKeys])
 
   const installedById = useMemo(() => {
     const map = new Map<string, PluginInfo>()
@@ -157,6 +193,13 @@ export function PluginsPanel({ onClose }: Props) {
     }
   }
 
+  /** 装完之后关于签名的补充说明：签名有效就不说了 */
+  const sigNoteAfterInstall = (info?: SignatureInfo | null): string => {
+    if (!info || info.status === 'verified') return ''
+    if (info.status === 'unsigned') return '这个包没有签名，来源没法核实。'
+    return `这个包由「${info.keyId ?? '未知'}」签名，但这把公钥不在信任名单里——去「签名密钥」里加上才能验证。`
+  }
+
   const install = async (entry: MarketEntry) => {
     const okay = await confirm({
       title: '安装插件',
@@ -171,17 +214,19 @@ export function PluginsPanel({ onClose }: Props) {
     try {
       const list = await installPlugin(entry.id, entry.url)
       setPlugins(list)
+      const just = list.find(p => p.id === entry.id)
       // 索引是给人看的，豁免不了包里自己的清单：实际申请多了就说一声
-      const extra = extraPerms(
-        list.find(p => p.id === entry.id)?.permissions,
-        entry.permissions
-      )
+      const extra = extraPerms(just?.permissions, entry.permissions)
+      const notes: string[] = []
       if (extra.length) {
-        setNotice(
+        notes.push(
           `已安装，但包里实际申请的能力比索引里写得多：${extra.map(permLabel).join(' / ')}。` +
             '可以在「已安装」里核对这些权限，不满意就卸载。'
         )
       }
+      const sigNote = sigNoteAfterInstall(just?.signature)
+      if (sigNote) notes.push(sigNote)
+      setNotice(notes.join('\n'))
     } catch (e) {
       setActionError(`安装 ${entry.name} 失败：${String(e).replace(/^Error:\s*/, '')}`)
     } finally {
@@ -224,9 +269,17 @@ export function PluginsPanel({ onClose }: Props) {
     }
 
     const tail = peek.hasEntry ? '' : '\n\n注意：包里没有清单指向的 wasm，装上也不能运行。'
+    if (sigFatal(peek.signature.status)) {
+      // 后端也会拒，这里先一步把话说清楚，省得用户点完才看到报错
+      setActionError(`签名校验没通过，已拒绝安装：${peek.signature.detail}`)
+      return
+    }
     const okay = await confirm({
       title: '安装插件',
-      message: installMessage(peek.name, peek.version, peek.permissions) + tail,
+      message:
+        installMessage(peek.name, peek.version, peek.permissions) +
+        sigNotice(peek.signature) +
+        tail,
       confirmText: '安装'
     })
     if (!okay) return
@@ -235,17 +288,58 @@ export function PluginsPanel({ onClose }: Props) {
     try {
       const list = await installPluginZip(path)
       setPlugins(list)
-      const extra = extraPerms(
-        list.find(p => p.id === peek.id)?.permissions,
-        peek.permissions
-      )
+      const just = list.find(p => p.id === peek.id)
+      const extra = extraPerms(just?.permissions, peek.permissions)
+      const notes: string[] = []
       if (extra.length) {
-        setNotice(`已安装，但实际申请的能力比清单里多一些：${extra.map(permLabel).join(' / ')}。`)
+        notes.push(`已安装，但实际申请的能力比清单里多一些：${extra.map(permLabel).join(' / ')}。`)
       }
+      const sigNote = sigNoteAfterInstall(just?.signature ?? peek.signature)
+      if (sigNote) notes.push(sigNote)
+      setNotice(notes.join('\n'))
     } catch (e) {
       setActionError(`安装失败：${String(e).replace(/^Error:\s*/, '')}`)
     } finally {
       setBusyId('')
+    }
+  }
+
+  const addKey = async () => {
+    setKeyError('')
+    const id = newKeyId.trim()
+    if (!id) {
+      setKeyError('密钥 id 不能为空，写什么由你定，只要和包里 signature.json 的 keyId 对上')
+      return
+    }
+    const pub = normalizePubkey(newKeyPub)
+    if (!pub.ok) {
+      setKeyError(`公钥不对：${pub.error}`)
+      return
+    }
+    try {
+      setKeys(await pluginKeyAdd(id, pub.key, newKeyLabel.trim() || id))
+      setNewKeyId('')
+      setNewKeyPub('')
+      setNewKeyLabel('')
+      setNotice(`已信任密钥「${id}」。重新打开插件包的确认框就能看到验签结果。`)
+    } catch (e) {
+      setKeyError(String(e).replace(/^Error:\s*/, ''))
+    }
+  }
+
+  const removeKey = async (key: TrustedKey) => {
+    const okay = await confirm({
+      title: '移除签名密钥',
+      message: `移除之后，由「${key.label || key.id}」签名的包会退回「密钥未信任」——能装，但验不了签。`,
+      confirmText: '移除',
+      danger: true
+    })
+    if (!okay) return
+    setKeyError('')
+    try {
+      setKeys(await pluginKeyRemove(key.id))
+    } catch (e) {
+      setKeyError(String(e).replace(/^Error:\s*/, ''))
     }
   }
 
@@ -272,6 +366,12 @@ export function PluginsPanel({ onClose }: Props) {
               {p.author ? ` · ${p.author}` : ''}
             </div>
             <PermChips keys={p.permissions} unknown={p.unknownPermissions} />
+            <div className="plugin-sig-row">
+              <SigChip info={p.signature} />
+              {p.signature?.status !== 'verified' && (
+                <span className="sig-hint">{p.signature?.detail}</span>
+              )}
+            </div>
           </div>
           <div className="plugin-actions">
             <button
@@ -399,12 +499,78 @@ export function PluginsPanel({ onClose }: Props) {
     </>
   )
 
+  const renderKeys = () => (
+    <>
+      <div className="pane-empty small">
+        插件包用 Ed25519 签名：作者私钥自留、公钥公开，你把公钥贴进来即可。装包时客户端拿公钥验一遍，
+        内容对不上直接拒绝安装；没签名或不认识的密钥只是提醒。官方密钥编译在客户端里，删不掉。
+      </div>
+
+      {!keys.length && <div className="pane-empty small">还没有信任任何密钥。</div>}
+
+      {keys.map(k => (
+        <div className="plugin-row" key={k.id}>
+          <div className="plugin-main">
+            <div className="plugin-name">
+              {k.label || k.id}
+              {k.builtin && <span className="plugin-badge">内置</span>}
+            </div>
+            <div className="plugin-meta">
+              keyId：{k.id} · 指纹 <span className="mono">{keyFingerprint(k.publicKey)}</span>
+            </div>
+          </div>
+          <div className="plugin-actions">
+            {removableKey(k) ? (
+              <button className="btn" onClick={() => void removeKey(k)}>
+                移除
+              </button>
+            ) : (
+              <span className="perm-none">随客户端发布</span>
+            )}
+          </div>
+        </div>
+      ))}
+
+      <div className="key-form">
+        <label className="dialog-label">信任一把新公钥</label>
+        <div className="market-bar">
+          <input
+            className="text-input"
+            placeholder="keyId（要和包里 signature.json 的一致）"
+            value={newKeyId}
+            onChange={e => setNewKeyId(e.target.value)}
+          />
+          <input
+            className="text-input"
+            placeholder="备注名（可选）"
+            value={newKeyLabel}
+            onChange={e => setNewKeyLabel(e.target.value)}
+          />
+        </div>
+        <input
+          className="text-input mono"
+          placeholder="公钥：64 个十六进制字符，空格和冒号会自动去掉"
+          value={newKeyPub}
+          onChange={e => setNewKeyPub(e.target.value)}
+        />
+        <div className="market-bar">
+          <button className="btn primary" onClick={() => void addKey()}>
+            添加
+          </button>
+          <span className="sig-hint">私钥不要贴进来；这里只收公钥。</span>
+        </div>
+      </div>
+
+      {keyError && <div className="panel-error">{keyError}</div>}
+    </>
+  )
+
   return (
     <div className="panel-overlay" onClick={onClose}>
       <div className="panel" onClick={e => e.stopPropagation()}>
         <div className="panel-head">
           <b>插件</b>
-          <span className="panel-sub">WASM 沙箱 · ABI v1 / v2 · 能力按清单授予</span>
+          <span className="panel-sub">WASM 沙箱 · ABI v1 / v2 · 能力按清单授予 · 安装前验签</span>
           <span className="panel-spacer" />
           <button className="icon-btn" onClick={onClose}>
             ×
@@ -424,10 +590,19 @@ export function PluginsPanel({ onClose }: Props) {
           >
             插件市场
           </button>
+          <button
+            className={`tab-pill${tab === 'keys' ? ' on' : ''}`}
+            onClick={() => {
+              setTab('keys')
+              void refreshKeys()
+            }}
+          >
+            签名密钥 {keys.length ? `(${keys.length})` : ''}
+          </button>
         </div>
 
         <div className="panel-body">
-          {tab === 'installed' ? renderInstalled() : renderMarket()}
+          {tab === 'installed' ? renderInstalled() : tab === 'market' ? renderMarket() : renderKeys()}
           {notice && <div className="panel-note">{notice}</div>}
           {actionError && <div className="panel-error">{actionError}</div>}
         </div>
@@ -437,6 +612,8 @@ export function PluginsPanel({ onClose }: Props) {
             <span title={dir}>
               插件目录：{dir || '—'} <button className="link-btn" onClick={() => void copyText(dir)}>复制</button>
             </span>
+          ) : tab === 'keys' ? (
+            <span>密钥存在本地，随卸载重装丢失；官方密钥随客户端发布。</span>
           ) : (
             <span>当前文件：{active ?? '未打开'}</span>
           )}

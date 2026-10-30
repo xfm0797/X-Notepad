@@ -49,6 +49,8 @@ export interface PluginInfo {
   permissions: string[]
   /** 清单里写了但宿主不认识的能力名 */
   unknownPermissions: string[]
+  /** 包签名状态（装完之后还会对目录再算一次摘要） */
+  signature: SignatureInfo
   dir: string
   available: boolean
 }
@@ -63,6 +65,29 @@ export interface PluginPeek {
   unknownPermissions: string[]
   /** 包里有没有清单 entry 指向的 wasm */
   hasEntry: boolean
+  /** 签名状态 */
+  signature: SignatureInfo
+}
+
+/** 验签结果，字段跟 Rust 侧 `plugin_sig::SignatureInfo` 一一对应 */
+export interface SignatureInfo {
+  status: 'verified' | 'untrusted' | 'unsigned' | 'invalid'
+  /** 包里声明的密钥 id */
+  keyId?: string | null
+  /** 信任名单里这把钥匙的备注名 */
+  keyLabel?: string | null
+  /** 算出来的内容摘要，出问题时用来对账 */
+  digest: string
+  detail: string
+}
+
+/** 信任的签名公钥（含编译进客户端的官方密钥） */
+export interface TrustedKey {
+  id: string
+  publicKey: string
+  label: string
+  /** 内置的官方密钥：删不掉 */
+  builtin?: boolean
 }
 
 export const isTauri =
@@ -456,6 +481,31 @@ export async function pluginDir(): Promise<string> {
   } catch {
     return ''
   }
+}
+
+/** 当前信任的签名公钥 */
+export async function pluginKeys(): Promise<TrustedKey[]> {
+  if (!isTauri) return []
+  try {
+    return await invoke<TrustedKey[]>('plugin_keys')
+  } catch {
+    return []
+  }
+}
+
+/** 信任一把新的公钥（同 id 覆盖） */
+export async function pluginKeyAdd(
+  id: string,
+  publicKey: string,
+  label: string
+): Promise<TrustedKey[]> {
+  if (!isTauri) throw new Error('浏览器模式不支持管理签名密钥')
+  return invoke<TrustedKey[]>('plugin_key_add', { id, publicKey, label })
+}
+
+export async function pluginKeyRemove(id: string): Promise<TrustedKey[]> {
+  if (!isTauri) throw new Error('浏览器模式不支持管理签名密钥')
+  return invoke<TrustedKey[]>('plugin_key_remove', { id })
 }
 
 /** 选一个 .zip 插件包 */

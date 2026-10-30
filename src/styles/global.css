@@ -957,6 +957,89 @@ kbd {
   opacity: 0.7;
 }
 
+/* 签名状态：一枚小标签 + 一句解释 */
+.plugin-sig-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.sig-chip {
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.sig-chip.ok {
+  border-color: color-mix(in srgb, #1a9f5b 40%, transparent);
+  background: color-mix(in srgb, #1a9f5b 14%, transparent);
+  color: #147a45;
+}
+
+:root[data-theme='dark'] .sig-chip.ok {
+  color: #55d68c;
+}
+
+.sig-chip.warn {
+  border-color: color-mix(in srgb, #f5a524 45%, transparent);
+  background: color-mix(in srgb, #f5a524 16%, transparent);
+  color: #8a5a00;
+}
+
+:root[data-theme='dark'] .sig-chip.warn {
+  color: #ffc45c;
+}
+
+.sig-chip.bad {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.sig-chip.muted {
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--text-dim) 10%, transparent);
+}
+
+.sig-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+
+.key-form {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.key-form .dialog-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.key-form .market-bar + .text-input,
+.key-form .text-input + .market-bar {
+  margin-top: 6px;
+}
+
+.key-form .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
 .plugin-output {
   margin-top: 10px;
   border: 1px solid var(--border);
