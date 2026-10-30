@@ -14,12 +14,14 @@ export interface SnippetSeg {
   hit: boolean
 }
 
-/** 一行命中：行号 + 这一行的原文（命中处高亮） */
+/** 一行上下文：行号 + 这一行的原文（命中处高亮） */
 export interface SearchSpan {
   /** 1 起算 */
   line: number
   column: number
   snippet: SnippetSeg[]
+  /** 这一行本身有命中；false 是两块命中之间补的上下文行 */
+  hit: boolean
 }
 
 export interface SearchHit {
@@ -267,6 +269,8 @@ export const MAX_SPANS = 20
 const LINE_MAX = 240
 /** 截断时命中处前面留多少字符 */
 const LINE_HEAD = 60
+/** 两个命中行相差不到这么多行就合成一段，跟 Rust 侧 MERGE_GAP 对齐 */
+export const MERGE_GAP = 3
 
 interface RawLine {
   line: number
@@ -275,6 +279,7 @@ interface RawLine {
   ranges: Range[]
   cutBefore: boolean
   cutAfter: boolean
+  hit: boolean
 }
 
 /**
@@ -318,6 +323,9 @@ function segmentsOf(win: string, ranges: Range[]): SnippetSeg[] {
  *
  * 跟 `src-tauri/src/lines.rs` 的 `group` 一一对应：演示模式（浏览器 / jsdom）
  * 和桌面端看到的行号、列号、缩进处理必须一模一样，否则同一份笔记两边对不上。
+ *
+ * 相邻的命中会连成一段——中间只隔 `MERGE_GAP - 1` 行以内时，那几行也补进来
+ * （`hit: false`），于是「行号连续」就等于「同一段」，前端不必另存分组信息。
  */
 export function spansOf(
   text: string,
@@ -335,9 +343,13 @@ export function spansOf(
 
   const raw: RawLine[] = []
   let spanTotal = 0
+  // 已经建了窗口的命中行数（上下文行不算，否则 max 会被它们吃光）
+  let built = 0
   // 上一段区间落在哪一行：超过上限后不再建窗口，但「这行算过了」得记住，
   // 否则同一行的后几处命中会被数成好几行
   let seen = -1
+  // 最后一个进来的行（命中或上下文），用来判断下一处命中离得远不远
+  let lastIdx = -1
   for (const [s, e] of sorted) {
     // 二分找命中起点所在的行
     let lo = 0
@@ -354,7 +366,7 @@ export function spansOf(
 
     if (seen === lo) {
       const last = raw[raw.length - 1]
-      if (last && last.line === lo + 1) {
+      if (last && last.hit && last.line === lo + 1) {
         const clampS = Math.max(s, last.start)
         const clampE = Math.min(end, last.end)
         if (clampE > clampS) last.ranges.push([clampS - last.start, clampE - last.start])
@@ -363,7 +375,17 @@ export function spansOf(
     }
     seen = lo
     spanTotal++
-    if (raw.length >= max) continue
+    if (built >= max) continue
+    built++
+
+    // 跟上一行隔得近就把中间几行补成上下文，两处命中在界面上连成一段
+    if (lastIdx >= 0) {
+      const gap = lo - lastIdx - 1
+      if (gap > 0 && gap < MERGE_GAP) {
+        for (let k = 1; k <= gap; k++) raw.push(contextLine(text, starts, lastIdx + k))
+      }
+    }
+
     // 行首缩进、行尾空白都去掉，上下文从正文开始
     const lineText = text.slice(lineStart, lineEnd)
     const lead = lineText.length - lineText.replace(/^[ \t]+/, '').length
@@ -377,12 +399,14 @@ export function spansOf(
       end: clip.end,
       ranges: [],
       cutBefore: clip.cutBefore,
-      cutAfter: clip.cutAfter
+      cutAfter: clip.cutAfter,
+      hit: true
     }
     const clampS = Math.max(s, clip.start)
     const clampE = Math.min(end, clip.end)
     if (clampE > clampS) item.ranges.push([clampS - clip.start, clampE - clip.start])
     raw.push(item)
+    lastIdx = lo
   }
 
   const spans: SearchSpan[] = raw.map(item => {
@@ -395,10 +419,68 @@ export function spansOf(
       line: item.line,
       // 列按字符算（不是 UTF-16 code unit），跟 Rust 侧一致
       column: Array.from(win.slice(0, first)).length + 1,
-      snippet: segs
+      snippet: segs,
+      hit: item.hit
     }
   })
   return { spans, spanTotal }
+}
+
+/** 补一行上下文：没有高亮区间，超长就从行首截断 */
+function contextLine(text: string, starts: number[], idx: number): RawLine {
+  const lineStart = starts[idx]
+  const lineEnd = idx + 1 < starts.length ? starts[idx + 1] - 1 : text.length
+  const lineText = text.slice(lineStart, lineEnd)
+  const lead = lineText.length - lineText.replace(/^[ \t]+/, '').length
+  const trimmed = lineText.replace(/[ \t\r]+$/, '')
+  const ts = lineStart + lead
+  const te = lineStart + Math.max(trimmed.length, lead)
+  const clip = clipLine(text, ts, te, ts)
+  return {
+    line: idx + 1,
+    start: clip.start,
+    end: clip.end,
+    ranges: [],
+    cutBefore: false,
+    cutAfter: clip.cutAfter,
+    hit: false
+  }
+}
+
+/** 一段：行号连续的若干行（命中行 + 中间补的上下文） */
+export interface SpanBlock {
+  from: number
+  to: number
+  /** 这一段里有几行真命中 */
+  hits: number
+  spans: SearchSpan[]
+  /** 与上一段之间跳过了几行；第一段为 0 */
+  gap: number
+}
+
+/**
+ * 顺着行号把上下文切成段：连着的算同一段，断开的地方给出「中间跳了几行」。
+ * 段内可能一行命中都没有（理论上不会出现，兜底不至于崩）。
+ */
+export function foldSpans(spans: SearchSpan[]): SpanBlock[] {
+  const blocks: SpanBlock[] = []
+  for (const span of spans) {
+    const last = blocks[blocks.length - 1]
+    if (last && span.line === last.to + 1) {
+      last.spans.push(span)
+      last.to = span.line
+      if (span.hit) last.hits++
+      continue
+    }
+    blocks.push({
+      from: span.line,
+      to: span.line,
+      hits: span.hit ? 1 : 0,
+      spans: [span],
+      gap: last ? span.line - last.to - 1 : 0
+    })
+  }
+  return blocks
 }
 
 export function lineColOf(text: string, index: number): { line: number; column: number } {

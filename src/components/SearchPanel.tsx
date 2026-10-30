@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { groupHits } from '../lib/dirgroup'
+import { foldSpans } from '../lib/search'
 import { useWorkspace } from '../store/workspace'
 
 function stamp(secs: number): string {
@@ -210,28 +211,44 @@ export function SearchPanel() {
 
                     {hit.spans.length > 0 && (
                       <div className="search-spans">
-                        {hit.spans.map(span => (
-                          <button
-                            key={span.line}
-                            className="search-span"
-                            title={`跳到第 ${span.line} 行`}
-                            onClick={() => void openHit({ ...hit, line: span.line, column: span.column })}
-                          >
-                            <span className="search-span-no">{span.line}</span>
-                            <span className="search-span-text">
-                              {span.snippet.map((seg, i) =>
-                                seg.hit ? (
-                                  <mark key={i}>{seg.text}</mark>
-                                ) : (
-                                  <span key={i}>{seg.text}</span>
-                                )
-                              )}
-                            </span>
-                          </button>
+                        {foldSpans(hit.spans).map(block => (
+                          <div className="search-block" key={block.from}>
+                            {/* 两段之间断开了：告诉人跳了多少行，别以为漏了 */}
+                            {block.gap > 0 && (
+                              <div className="search-block-gap">⋯ 跳 {block.gap} 行</div>
+                            )}
+                            {block.spans.length > 1 && (
+                              <div className="search-block-head">
+                                第 {block.from}–{block.to} 行 · {block.hits} 处命中
+                              </div>
+                            )}
+                            {block.spans.map(span => (
+                              <button
+                                key={span.line}
+                                // 中间补的上下文行没高亮，样式压暗，跟命中行区分开
+                                className={`search-span${span.hit ? '' : ' context'}`}
+                                title={`跳到第 ${span.line} 行`}
+                                onClick={() =>
+                                  void openHit({ ...hit, line: span.line, column: span.column })
+                                }
+                              >
+                                <span className="search-span-no">{span.line}</span>
+                                <span className="search-span-text">
+                                  {span.snippet.map((seg, i) =>
+                                    seg.hit ? (
+                                      <mark key={i}>{seg.text}</mark>
+                                    ) : (
+                                      <span key={i}>{seg.text}</span>
+                                    )
+                                  )}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
                         ))}
-                        {hit.spanTotal > hit.spans.length && (
+                        {hit.spanTotal > hit.spans.filter(s => s.hit).length && (
                           <div className="search-span-more">
-                            还有 {hit.spanTotal - hit.spans.length} 行没列出，点文件名看全部
+                            还有 {hit.spanTotal - hit.spans.filter(s => s.hit).length} 行没列出，点文件名看全部
                           </div>
                         )}
                       </div>

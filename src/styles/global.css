@@ -1976,3 +1976,36 @@ kbd {
   color: var(--text-dim);
   opacity: 0.8;
 }
+
+/* 一段：相邻的命中连成一块，左边一条细线把范围圈出来 */
+.search-block {
+  margin-bottom: 2px;
+  padding-left: 2px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.search-block-head {
+  padding: 1px 6px 2px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+/* 两段之间断开了：告诉人中间跳了多少行，别以为漏了结果 */
+.search-block-gap {
+  margin: 3px 0 3px 6px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  opacity: 0.6;
+  user-select: none;
+}
+
+/* 中间补的上下文行：没高亮，压暗一档，别跟命中行抢注意力 */
+.search-span.context {
+  opacity: 0.6;
+}
+
+.search-span.context:hover {
+  opacity: 1;
+}

@@ -83,13 +83,15 @@ pub struct Hit {
     pub span_total: u32,
 }
 
-/// 一行命中：行号 + 这一行的原文切片（命中处高亮）
+/// 一行上下文：行号 + 这一行的原文切片（命中处高亮）。
+/// `hit = false` 的是两块命中之间补的上下文行——前端顺着行号连不连续切段。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpanHit {
     pub line: u32,
     pub column: u32,
     pub snippet: Vec<Seg>,
+    pub hit: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -375,6 +377,7 @@ fn make_snippet(text: &str, anchor: usize, terms: &[String], case_sensitive: boo
 
 /// 区间折成「一行一条」的上下文。行窗口就是那一行的原文，
 /// 高亮区间已经换算成行内相对偏移，直接交给 assemble 切片。
+/// 相邻的命中会连成一段（中间补 `hit = false` 的上下文行）。
 fn spans_of(text: &str, ranges: &[(usize, usize)]) -> (Vec<SpanHit>, u32) {
     let (lines, total) = lines::group(text, ranges, MAX_SPANS);
     let spans = lines
@@ -384,6 +387,7 @@ fn spans_of(text: &str, ranges: &[(usize, usize)]) -> (Vec<SpanHit>, u32) {
             column: l.column,
             // 超长行被截过就补「…」，别让人以为一行就这么点
             snippet: assemble(&text[l.start..l.end], l.ranges.clone(), l.cut_before, l.cut_after),
+            hit: l.hit,
         })
         .collect();
     (spans, total)
