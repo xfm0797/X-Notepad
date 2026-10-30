@@ -1,6 +1,6 @@
 [package]
 name = "x-notepad"
-version = "0.14.0"
+version = "0.15.0"
 description = "X-Notepad - 笔记 + 代码编辑器"
 authors = ["XFM <https://www.lovou.pw>"]
 edition = "2021"
@@ -37,6 +37,9 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # WASM 插件沙箱。默认开启，可用 --no-default-features 关掉换取更快的编译
 wasmtime = { version = "50", optional = true }
+# 插件包签名：ed25519 验签 + 内容摘要
+sha2 = "0.10"
+ed25519-dalek = "2"
 
 [features]
 default = ["wasm-plugins"]

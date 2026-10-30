@@ -1,0 +1,6 @@
+{
+  "algo": "ed25519",
+  "keyId": "xfm-official",
+  "digest": "9a5d9d9992ff0d8aed75df930211caf6de911c29c08d3065c1b1f9a910dd4c92",
+  "signature": "bba3239b6ed4eedc3ddf766f0d7748d2e91f8896469dc6fc3b011f6579a798c02be8809a134992538e660edbde4f85163acdd4de7442bffc65fce9eb92cf1004"
+}

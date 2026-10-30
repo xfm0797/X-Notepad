@@ -20,6 +20,7 @@
 
 use crate::plugin_abi::{self, Binary};
 use crate::plugin_perm;
+use crate::plugin_sig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -73,6 +74,8 @@ pub struct PluginInfo {
     pub permissions: Vec<String>,
     /// 清单里写了但宿主不认识的能力名（多半是拼错了）
     pub unknown_permissions: Vec<String>,
+    /// 包签名状态：验签在新装时做过，这里对目录再算一遍摘要，防止装完之后被人改文件
+    pub signature: plugin_sig::SignatureInfo,
     pub dir: String,
     /// wasm 文件是否就位（没编译过就是 false）
     pub available: bool,
@@ -93,6 +96,8 @@ pub struct PluginHost {
     dirs: Vec<PathBuf>,
     /// `plugin-settings.json`：v2 插件 `read-setting` 的来源
     settings: PathBuf,
+    /// 信任的签名公钥：`plugin-keys.json`（内置官方密钥在 `plugin_sig` 里）
+    keys: PathBuf,
     #[cfg(feature = "wasm-plugins")]
     engine: wasmtime::Engine,
     #[cfg(feature = "wasm-plugins")]
@@ -108,10 +113,11 @@ enum Loaded {
 }
 
 impl PluginHost {
-    pub fn new(dirs: Vec<PathBuf>, settings: PathBuf) -> Self {
+    pub fn new(dirs: Vec<PathBuf>, settings: PathBuf, keys: PathBuf) -> Self {
         Self {
             dirs,
             settings,
+            keys,
             #[cfg(feature = "wasm-plugins")]
             engine: wasmtime::Engine::default(),
             #[cfg(feature = "wasm-plugins")]
@@ -148,6 +154,7 @@ impl PluginHost {
     }
 
     pub fn list(&self) -> Vec<PluginInfo> {
+        let keys = plugin_sig::trusted_keys(plugin_sig::load_keys(&self.keys));
         self.scan()
             .into_iter()
             .map(|(m, dir)| {
@@ -162,6 +169,7 @@ impl PluginHost {
                     abi,
                     permissions: grant.keys().to_vec(),
                     unknown_permissions: grant.unknown().to_vec(),
+                    signature: plugin_sig::verify_dir(&dir, &keys),
                     id: m.id,
                     name: m.name,
                     version: m.version,
@@ -649,7 +657,7 @@ mod tests {
         let manifest = r#"{"id":"legacy-demo","name":"老插件","version":"0.1.0","abi":1}"#;
         let (root, pdir) = temp_plugin_root("v1", "legacy-demo", manifest, &wasm);
 
-        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"), pdir.join("no-keys.json"));
         assert_eq!(host.list()[0].abi, plugin_abi::ABI_LEGACY);
         let out = host.run("legacy-demo", r#"{"action":"render"}"#).unwrap();
         assert_eq!(out, json);
@@ -664,7 +672,7 @@ mod tests {
         let manifest = r#"{"id":"confused","name":"搞错了","version":"0.1.0","abi":2}"#;
         let (root, pdir) = temp_plugin_root("mismatch", "confused", manifest, &wasm);
 
-        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"), pdir.join("no-keys.json"));
         let err = host.run("confused", "{}").unwrap_err();
         assert!(err.contains("wrap-component"), "{err}");
 
@@ -687,7 +695,7 @@ mod tests {
 
         let stingy = r#"{"id":"mute","name":"不给日志","version":"0.1.0","abi":1,"permissions":[]}"#;
         let (root, pdir) = temp_plugin_root("v1-deny", "mute", stingy, &wasm);
-        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"), pdir.join("no-keys.json"));
         let err = host.run("mute", "{}").unwrap_err();
         assert!(err.contains("log"), "{err}");
         assert!(err.contains("permissions"), "{err}");
@@ -695,7 +703,7 @@ mod tests {
 
         let allowed = r#"{"id":"mute","name":"给日志","version":"0.1.0","abi":1,"permissions":["log"]}"#;
         let (root, pdir) = temp_plugin_root("v1-allow", "mute", allowed, &wasm);
-        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"), pdir.join("no-keys.json"));
         assert_eq!(host.run("mute", "{}").unwrap(), "{}");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -712,7 +720,7 @@ mod tests {
         let manifest = r#"{"id":"stingy","name":"什么都不给","version":"0.1.0","abi":2,"permissions":[]}"#;
         let (root, pdir) = temp_plugin_root("v2-deny", "stingy", manifest, &wasm);
 
-        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"), pdir.join("no-keys.json"));
         let info = &host.list()[0];
         assert!(info.permissions.is_empty());
         let err = host
@@ -731,7 +739,7 @@ mod tests {
             eprintln!("跳过：先跑 plugins/csv-viewer/build.sh");
             return;
         }
-        let host = PluginHost::new(vec![root.clone()], root.join("no-settings.json"));
+        let host = PluginHost::new(vec![root.clone()], root.join("no-settings.json"), root.join("no-keys.json"));
         let info = &host.list()[0];
         assert_eq!(info.abi, plugin_abi::ABI_COMPONENT);
         assert_eq!(info.permissions, ["log", "read-setting"]);

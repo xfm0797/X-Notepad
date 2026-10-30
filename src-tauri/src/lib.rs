@@ -12,6 +12,7 @@ mod market;
 mod meta;
 mod plugin_abi;
 mod plugin_perm;
+mod plugin_sig;
 mod plugins;
 mod replace_plan;
 mod search;
@@ -33,6 +34,8 @@ pub struct AppState {
     pub watchers: Mutex<HashMap<String, notify::RecommendedWatcher>>,
     /// 用户插件目录（市场安装到这里）
     pub plugin_dir: std::path::PathBuf,
+    /// 信任的插件签名公钥（用户自己加的那些；官方密钥编译在内）
+    pub key_store: std::path::PathBuf,
     /// 全库替换的快照目录（撤销用的底稿）
     pub snap_dir: std::path::PathBuf,
 }
@@ -68,15 +71,19 @@ pub fn run() {
             let snap_dir = data_dir.join("replace-snapshots");
             let _ = std::fs::create_dir_all(&snap_dir);
 
+            let key_store = data_dir.join("plugin-keys.json");
+
             app.manage(AppState {
                 db: Mutex::new(conn),
                 search_db: Arc::new(Mutex::new(search_conn)),
                 plugins: plugins::PluginHost::new(
                     plugin_dirs.clone(),
                     data_dir.join("plugin-settings.json"),
+                    key_store.clone(),
                 ),
                 watchers: Mutex::new(HashMap::new()),
                 plugin_dir: plugin_dirs[0].clone(),
+                key_store,
                 snap_dir,
             });
             Ok(())
@@ -116,6 +123,9 @@ pub fn run() {
             market::plugin_peek_zip,
             market::plugin_uninstall,
             market::plugin_dir,
+            market::plugin_keys,
+            market::plugin_key_add,
+            market::plugin_key_remove,
         ])
         .run(tauri::generate_context!())
         .expect("X-Notepad 启动失败");
