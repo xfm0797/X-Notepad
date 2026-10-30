@@ -100,3 +100,26 @@ jobs:
         run: |
           head -c 8 plugins/csv-viewer/plugin.wasm | od -An -tx1 | tr -d ' \n' | grep -qx '0061736d0d000100'
           ls -l plugins/csv-viewer/plugin.wasm
+
+      # 签名链路：脚本与 Rust 验签器的摘要规则必须一致，改包必须被发现。
+      # Rust 那边用 fixtures/signed-demo 钉住 Node 的产出（见 plugin_sig::tests）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 签名 → 验签 → 改包必须失败
+        run: |
+          set -e
+          work=$(mktemp -d)
+          mkdir -p "$work/pkg"
+          cp plugins/csv-viewer/plugin.json plugins/csv-viewer/plugin.wasm "$work/pkg/"
+          node scripts/sign-plugin.mjs keygen --id ci-key --label CI --out "$work/ci-key.json"
+          node scripts/sign-plugin.mjs sign "$work/pkg" --key "$work/ci-key.json"
+          node scripts/sign-plugin.mjs verify "$work/pkg" --key "$work/ci-key.json"
+          printf 'x' >> "$work/pkg/plugin.json"
+          if node scripts/sign-plugin.mjs verify "$work/pkg" --key "$work/ci-key.json"; then
+            echo "被改过的包竟然验过了" >&2
+            exit 1
+          fi
+          echo "改包已被挡住"
+

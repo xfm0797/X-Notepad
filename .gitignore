@@ -16,3 +16,6 @@ tools/*/target
 .verify-app
 .verify-smoke
 .verify-src
+
+# 本机的 cargo 镜像配置（rsproxy 之类），各人环境不同，不入库
+.cargo

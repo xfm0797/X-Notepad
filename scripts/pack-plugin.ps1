@@ -1,14 +1,19 @@
-<#
+﻿<#
 打包一个插件目录成市场用的 zip。
 
 用法：
   powershell -File scripts/pack-plugin.ps1 -PluginDir plugins/csv-viewer
+  powershell -File scripts/pack-plugin.ps1 -PluginDir plugins/csv-viewer -KeyPath "$HOME/.xnp-signing/xfm-official.json"
 
-产物：dist-plugins/<id>.zip，里面只有 plugin.json 和清单里 entry 指向的 wasm。
+带 -KeyPath 时先给暂存目录签名（scripts/sign-plugin.mjs），signature.json 一起打进 zip。
+
+产物：dist-plugins/<id>.zip，里面是 plugin.json、清单 entry 指向的 wasm、
+README/LICENSE（有的话），以及 signature.json（签过的话）。
 #>
 param(
     [Parameter(Mandatory = $true)][string]$PluginDir,
-    [string]$OutDir = "dist-plugins"
+    [string]$OutDir = "dist-plugins",
+    [string]$KeyPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +39,18 @@ try {
     foreach ($extra in @("README.md", "LICENSE")) {
         $p = Join-Path $PluginDir $extra
         if (Test-Path $p) { Copy-Item $p (Join-Path $stage $extra) }
+    }
+
+    # 签名要在压缩之前做：摘要算的是暂存目录里这几个文件，
+    # 跟解包后落到插件目录的内容一模一样，验签才对得上。
+    if ($KeyPath) {
+        if (-not (Test-Path $KeyPath)) { throw "找不到私钥文件：$KeyPath" }
+        $signer = Join-Path $PSScriptRoot "sign-plugin.mjs"
+        node $signer sign $stage --key $KeyPath
+        if ($LASTEXITCODE -ne 0) { throw "签名失败" }
+    }
+    else {
+        Write-Host "提示：没带 -KeyPath，这个包不会签名（客户端会标「未签名」）" -ForegroundColor Yellow
     }
 
     $zip = Join-Path (Resolve-Path $OutDir) ("{0}.zip" -f $manifest.id)
