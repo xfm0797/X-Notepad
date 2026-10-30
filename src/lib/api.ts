@@ -45,8 +45,24 @@ export interface PluginInfo {
   description?: string | null
   abi: number
   extensions: string[]
+  /** 这次运行被授予的宿主能力（plugin.json 里的 permissions） */
+  permissions: string[]
+  /** 清单里写了但宿主不认识的能力名 */
+  unknownPermissions: string[]
   dir: string
   available: boolean
+}
+
+/** 装之前先看一眼包里的清单：用来提示「这个插件要哪些能力」 */
+export interface PluginPeek {
+  id: string
+  name: string
+  version: string
+  abi: number
+  permissions: string[]
+  unknownPermissions: string[]
+  /** 包里有没有清单 entry 指向的 wasm */
+  hasEntry: boolean
 }
 
 export const isTauri =
@@ -420,6 +436,12 @@ export async function installPlugin(id: string, url: string): Promise<PluginInfo
 export async function installPluginZip(path: string): Promise<PluginInfo[]> {
   if (!isTauri) throw new Error('浏览器模式不支持安装插件')
   return invoke<PluginInfo[]>('plugin_install_zip', { path })
+}
+
+/** 只读包里的清单，不落盘：安装前提示权限用 */
+export async function peekPluginZip(path: string): Promise<PluginPeek> {
+  if (!isTauri) throw new Error('浏览器模式不支持安装插件')
+  return invoke<PluginPeek>('plugin_peek_zip', { path })
 }
 
 export async function uninstallPlugin(id: string): Promise<PluginInfo[]> {

@@ -910,6 +910,53 @@ kbd {
   white-space: pre-wrap;
 }
 
+/* 不算报错、但用户该知道的事（例如实际权限比索引里写得多） */
+.panel-note {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #f5a524 16%, transparent);
+  color: #8a5a00;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+:root[data-theme='dark'] .panel-note {
+  color: #ffc45c;
+}
+
+/* 插件申请的宿主能力 */
+.plugin-perms {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.perm-chip {
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.perm-chip.unknown {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--danger);
+}
+
+.perm-none {
+  opacity: 0.7;
+}
+
 .plugin-output {
   margin-top: 10px;
   border: 1px solid var(--border);

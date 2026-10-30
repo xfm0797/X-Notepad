@@ -17,6 +17,8 @@ export interface MarketEntry {
   author?: string
   extensions?: string[]
   abi?: number
+  /** 索引里标注的宿主能力，仅供安装前提示；真正生效的是包里 plugin.json 的声明 */
+  permissions?: string[]
   /** 插件 zip 包地址 */
   url: string
   homepage?: string

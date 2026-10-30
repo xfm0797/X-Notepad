@@ -5,11 +5,13 @@ import {
   installPluginZip,
   isTauri,
   listPlugins,
+  peekPluginZip,
   pickPluginZip,
   pluginDir,
   runPlugin,
   uninstallPlugin,
-  type PluginInfo
+  type PluginInfo,
+  type PluginPeek
 } from '../lib/api'
 import {
   compareVersion,
@@ -18,6 +20,7 @@ import {
   setCustomSource,
   type MarketEntry
 } from '../lib/market'
+import { extraPerms, installMessage, permLabel, permMeta, unknownPerms } from '../lib/plugin-perm'
 import { confirm } from '../store/dialogs'
 import { useWorkspace } from '../store/workspace'
 
@@ -30,6 +33,31 @@ type Tab = 'installed' | 'market'
 /** ABI 版本怎么念给用户听：v2 是组件，v1 是老的指针协议 */
 function abiLabel(abi: number): string {
   return abi >= 2 ? 'ABI v2 · 组件' : 'ABI v1'
+}
+
+/** 一行能力标签：没申请就写「无」，认不出的键单独标出来 */
+function PermChips({ keys, unknown }: { keys?: string[] | null; unknown?: string[] | null }) {
+  const list = keys ?? []
+  const bad = unknown ?? []
+  return (
+    <div className="plugin-perms">
+      权限：
+      {list.length ? (
+        list.map(k => (
+          <span className="perm-chip" key={k} title={permMeta(k).hint}>
+            {permLabel(k)}
+          </span>
+        ))
+      ) : (
+        <span className="perm-none">无</span>
+      )}
+      {bad.map(k => (
+        <span className="perm-chip unknown" key={`u-${k}`} title="宿主不认识这个能力名，多半是拼错了">
+          {k} ?
+        </span>
+      ))}
+    </div>
+  )
 }
 
 /** 源地址里最后一段，展示用 */
@@ -60,6 +88,8 @@ export function PluginsPanel({ onClose }: Props) {
 
   const [busyId, setBusyId] = useState('')
   const [actionError, setActionError] = useState('')
+  /** 不算错误、但用户该知道的事（比如实际权限比索引里写得多） */
+  const [notice, setNotice] = useState('')
 
   const [running, setRunning] = useState('')
   const [output, setOutput] = useState('')
@@ -128,11 +158,30 @@ export function PluginsPanel({ onClose }: Props) {
   }
 
   const install = async (entry: MarketEntry) => {
+    const okay = await confirm({
+      title: '安装插件',
+      message: installMessage(entry.name, entry.version, entry.permissions),
+      confirmText: '安装'
+    })
+    if (!okay) return
+
     setBusyId(entry.id)
     setActionError('')
+    setNotice('')
     try {
       const list = await installPlugin(entry.id, entry.url)
       setPlugins(list)
+      // 索引是给人看的，豁免不了包里自己的清单：实际申请多了就说一声
+      const extra = extraPerms(
+        list.find(p => p.id === entry.id)?.permissions,
+        entry.permissions
+      )
+      if (extra.length) {
+        setNotice(
+          `已安装，但包里实际申请的能力比索引里写得多：${extra.map(permLabel).join(' / ')}。` +
+            '可以在「已安装」里核对这些权限，不满意就卸载。'
+        )
+      }
     } catch (e) {
       setActionError(`安装 ${entry.name} 失败：${String(e).replace(/^Error:\s*/, '')}`)
     } finally {
@@ -162,10 +211,37 @@ export function PluginsPanel({ onClose }: Props) {
   const installLocal = async () => {
     const path = await pickPluginZip()
     if (!path) return
-    setBusyId('__local__')
     setActionError('')
+    setNotice('')
+
+    // 先读包里的清单：装之前就把权限摆出来，别等装完才让人事后诸葛亮
+    let peek: PluginPeek
     try {
-      setPlugins(await installPluginZip(path))
+      peek = await peekPluginZip(path)
+    } catch (e) {
+      setActionError(`读取插件包失败：${String(e).replace(/^Error:\s*/, '')}`)
+      return
+    }
+
+    const tail = peek.hasEntry ? '' : '\n\n注意：包里没有清单指向的 wasm，装上也不能运行。'
+    const okay = await confirm({
+      title: '安装插件',
+      message: installMessage(peek.name, peek.version, peek.permissions) + tail,
+      confirmText: '安装'
+    })
+    if (!okay) return
+
+    setBusyId('__local__')
+    try {
+      const list = await installPluginZip(path)
+      setPlugins(list)
+      const extra = extraPerms(
+        list.find(p => p.id === peek.id)?.permissions,
+        peek.permissions
+      )
+      if (extra.length) {
+        setNotice(`已安装，但实际申请的能力比清单里多一些：${extra.map(permLabel).join(' / ')}。`)
+      }
     } catch (e) {
       setActionError(`安装失败：${String(e).replace(/^Error:\s*/, '')}`)
     } finally {
@@ -195,6 +271,7 @@ export function PluginsPanel({ onClose }: Props) {
               {p.extensions.join(' / ') || '任意文件'} · {abiLabel(p.abi)}
               {p.author ? ` · ${p.author}` : ''}
             </div>
+            <PermChips keys={p.permissions} unknown={p.unknownPermissions} />
           </div>
           <div className="plugin-actions">
             <button
@@ -297,6 +374,13 @@ export function PluginsPanel({ onClose }: Props) {
                 {(entry.extensions ?? []).join(' / ') || '任意文件'} · {abiLabel(entry.abi ?? 1)}
                 {entry.author ? ` · ${entry.author}` : ''}
               </div>
+              {entry.permissions ? (
+                <PermChips keys={entry.permissions} unknown={unknownPerms(entry.permissions)} />
+              ) : (
+                <div className="plugin-perms">
+                  权限：<span className="perm-none">索引未标注，装之前会再确认一次</span>
+                </div>
+              )}
             </div>
             <div className="plugin-actions">
               <button
@@ -320,7 +404,7 @@ export function PluginsPanel({ onClose }: Props) {
       <div className="panel" onClick={e => e.stopPropagation()}>
         <div className="panel-head">
           <b>插件</b>
-          <span className="panel-sub">WASM 沙箱 · ABI v1 / v2</span>
+          <span className="panel-sub">WASM 沙箱 · ABI v1 / v2 · 能力按清单授予</span>
           <span className="panel-spacer" />
           <button className="icon-btn" onClick={onClose}>
             ×
@@ -344,6 +428,7 @@ export function PluginsPanel({ onClose }: Props) {
 
         <div className="panel-body">
           {tab === 'installed' ? renderInstalled() : renderMarket()}
+          {notice && <div className="panel-note">{notice}</div>}
           {actionError && <div className="panel-error">{actionError}</div>}
         </div>
 
