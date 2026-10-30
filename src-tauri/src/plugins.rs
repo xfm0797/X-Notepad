@@ -19,6 +19,7 @@
 #![cfg_attr(not(feature = "wasm-plugins"), allow(dead_code))]
 
 use crate::plugin_abi::{self, Binary};
+use crate::plugin_perm;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -42,6 +43,11 @@ pub struct PluginManifest {
     /// 负责的扩展名，如 [".csv"]
     #[serde(default)]
     pub extensions: Vec<String>,
+    /// 要用到的宿主能力（`log` / `now-ms` / `read-setting`）。
+    /// 不写这个字段：v1 给 log + now-ms（历史行为），v2 什么都不给；
+    /// 写成 `[]` 就是明确不要任何能力。
+    #[serde(default)]
+    pub permissions: Option<Vec<String>>,
 }
 
 fn default_abi() -> u32 {
@@ -63,6 +69,10 @@ pub struct PluginInfo {
     /// 实际 ABI：插件文件就位时按文件头算，否则用 plugin.json 的声明
     pub abi: u32,
     pub extensions: Vec<String>,
+    /// 这次运行实际被授予的能力
+    pub permissions: Vec<String>,
+    /// 清单里写了但宿主不认识的能力名（多半是拼错了）
+    pub unknown_permissions: Vec<String>,
     pub dir: String,
     /// wasm 文件是否就位（没编译过就是 false）
     pub available: bool,
@@ -143,11 +153,15 @@ impl PluginHost {
             .map(|(m, dir)| {
                 let wasm = dir.join(&m.entry);
                 let binary = read_header(&wasm).map(|h| plugin_abi::detect(&h)).ok();
+                let abi = match binary {
+                    Some(b) => plugin_abi::effective_abi(m.abi, b),
+                    None => m.abi,
+                };
+                let grant = plugin_perm::Grant::resolve(m.permissions.as_deref(), abi);
                 PluginInfo {
-                    abi: match binary {
-                        Some(b) => plugin_abi::effective_abi(m.abi, b),
-                        None => m.abi,
-                    },
+                    abi,
+                    permissions: grant.keys().to_vec(),
+                    unknown_permissions: grant.unknown().to_vec(),
                     id: m.id,
                     name: m.name,
                     version: m.version,
@@ -175,12 +189,25 @@ impl PluginHost {
         let header = read_header(&wasm_path)?;
         let mode = plugin_abi::negotiate(manifest.abi, plugin_abi::detect(&header))?;
 
-        let (result, logs) = match mode {
-            Binary::Component => self.exec_component_path(&wasm_path, input),
-            _ => self.exec_core_path(&wasm_path, input),
+        // 能力按**实际形态**算默认值：清单声明得再漂亮，跑的是组件就按 v2 的规矩来
+        let abi = match mode {
+            Binary::Component => 2,
+            _ => 1,
+        };
+        let grant = plugin_perm::Grant::resolve(manifest.permissions.as_deref(), abi);
+        if !grant.unknown().is_empty() {
+            eprintln!("[plugin:{id}] {}", plugin_perm::unknown_message(grant.unknown()));
+        }
+
+        let (result, logs, denied) = match mode {
+            Binary::Component => self.exec_component_path(&wasm_path, input, grant),
+            _ => self.exec_core_path(&wasm_path, input, grant),
         };
         for line in logs {
             eprintln!("[plugin:{id}] {line}");
+        }
+        if !denied.is_empty() {
+            return Err(plugin_perm::denial_message(&denied));
         }
         result
     }
@@ -219,34 +246,54 @@ impl PluginHost {
     }
 
     #[cfg(feature = "wasm-plugins")]
-    fn exec_component_path(&self, path: &Path, input: &str) -> (Result<String, String>, Vec<String>) {
+    fn exec_component_path(
+        &self,
+        path: &Path,
+        input: &str,
+        grant: plugin_perm::Grant,
+    ) -> (Result<String, String>, Vec<String>, Vec<String>) {
         let component = match self.load_binary(path, Binary::Component) {
             Ok(Loaded::Component(c)) => c,
-            Ok(_) => return (Err("插件产物类型和声明的 ABI 对不上".to_string()), Vec::new()),
-            Err(e) => return (Err(e), Vec::new()),
+            Ok(_) => return (Err("插件产物类型和声明的 ABI 对不上".to_string()), Vec::new(), Vec::new()),
+            Err(e) => return (Err(e), Vec::new(), Vec::new()),
         };
-        exec_component(&self.engine, &component, input, self.load_settings())
+        exec_component(&self.engine, &component, input, grant, self.load_settings())
     }
 
     #[cfg(feature = "wasm-plugins")]
-    fn exec_core_path(&self, path: &Path, input: &str) -> (Result<String, String>, Vec<String>) {
+    fn exec_core_path(
+        &self,
+        path: &Path,
+        input: &str,
+        grant: plugin_perm::Grant,
+    ) -> (Result<String, String>, Vec<String>, Vec<String>) {
         let module = match self.load_binary(path, Binary::Core) {
             Ok(Loaded::Core(m)) => m,
-            Ok(_) => return (Err("插件产物类型和声明的 ABI 对不上".to_string()), Vec::new()),
-            Err(e) => return (Err(e), Vec::new()),
+            Ok(_) => return (Err("插件产物类型和声明的 ABI 对不上".to_string()), Vec::new(), Vec::new()),
+            Err(e) => return (Err(e), Vec::new(), Vec::new()),
         };
-        exec_core(&self.engine, &module, input)
+        exec_core(&self.engine, &module, input, grant)
     }
 
     // 关掉 wasm-plugins feature 时的两个替身，签名与上面保持一致
     #[cfg(not(feature = "wasm-plugins"))]
-    fn exec_component_path(&self, _path: &Path, _input: &str) -> (Result<String, String>, Vec<String>) {
-        (Err(disabled_msg()), Vec::new())
+    fn exec_component_path(
+        &self,
+        _path: &Path,
+        _input: &str,
+        _grant: plugin_perm::Grant,
+    ) -> (Result<String, String>, Vec<String>, Vec<String>) {
+        (Err(disabled_msg()), Vec::new(), Vec::new())
     }
 
     #[cfg(not(feature = "wasm-plugins"))]
-    fn exec_core_path(&self, _path: &Path, _input: &str) -> (Result<String, String>, Vec<String>) {
-        (Err(disabled_msg()), Vec::new())
+    fn exec_core_path(
+        &self,
+        _path: &Path,
+        _input: &str,
+        _grant: plugin_perm::Grant,
+    ) -> (Result<String, String>, Vec<String>, Vec<String>) {
+        (Err(disabled_msg()), Vec::new(), Vec::new())
     }
 
     /// `plugin-settings.json`：一个扁平的对象，插件通过 `read-setting` 按 key 取
@@ -283,6 +330,33 @@ fn read_header(path: &Path) -> Result<Vec<u8>, String> {
 struct HostCtx {
     logs: Vec<String>,
     settings: Vec<(String, String)>,
+    /// 这次运行允许用哪些能力
+    grant: plugin_perm::Grant,
+    /// 插件伸手要了但没被授予的能力（去重，按第一次出现的顺序）
+    denied: Vec<String>,
+}
+
+#[cfg(feature = "wasm-plugins")]
+impl HostCtx {
+    fn new(grant: plugin_perm::Grant, settings: Vec<(String, String)>) -> Self {
+        Self {
+            logs: Vec::new(),
+            settings,
+            grant,
+            denied: Vec::new(),
+        }
+    }
+
+    /// 记一次越权尝试；返回 false 表示这个能力没给
+    fn allow(&mut self, key: &str) -> bool {
+        if self.grant.allows(key) {
+            return true;
+        }
+        if !self.denied.iter().any(|k| k == key) {
+            self.denied.push(key.to_string());
+        }
+        false
+    }
 }
 
 #[cfg(feature = "wasm-plugins")]
@@ -301,6 +375,9 @@ impl abi2::xnote::plugin::types::Host for HostCtx {}
 #[cfg(feature = "wasm-plugins")]
 impl abi2::xnote::plugin::host::Host for HostCtx {
     fn log(&mut self, level: u32, message: String) {
+        if !self.allow(plugin_perm::LOG) {
+            return;
+        }
         let tag = match level {
             0 => "info",
             1 => "warn",
@@ -310,13 +387,20 @@ impl abi2::xnote::plugin::host::Host for HostCtx {
     }
 
     fn now_ms(&mut self) -> u64 {
+        if !self.allow(plugin_perm::NOW_MS) {
+            return 0;
+        }
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0)
     }
 
+    /// 没给权限就当这个键不存在（插件拿到 None，不会拿到别的键的值）
     fn read_setting(&mut self, key: String) -> Option<String> {
+        if !self.allow(plugin_perm::READ_SETTING) {
+            return None;
+        }
         self.settings
             .iter()
             .find(|(k, _)| *k == key)
@@ -329,8 +413,9 @@ fn exec_component(
     engine: &wasmtime::Engine,
     component: &wasmtime::component::Component,
     input: &str,
+    grant: plugin_perm::Grant,
     settings: Vec<(String, String)>,
-) -> (Result<String, String>, Vec<String>) {
+) -> (Result<String, String>, Vec<String>, Vec<String>) {
     use abi2::xnote::plugin::types::{Request, Response};
     use wasmtime::component::Linker;
     use wasmtime::Store;
@@ -341,11 +426,12 @@ fn exec_component(
             return (
                 Err(format!("插件入参不是合法 JSON：{e}")),
                 Vec::new(),
+                Vec::new(),
             )
         }
     };
 
-    let mut store = Store::new(engine, HostCtx { logs: Vec::new(), settings });
+    let mut store = Store::new(engine, HostCtx::new(grant, settings));
     let mut linker: Linker<HostCtx> = Linker::new(engine);
     // wasmtime 50 的 `add_to_linker<T, D>`：D 是“数据怎么从 store 里取出来”，
     // HasSelf<HostCtx> 就是最常见的「store 里直接放着 HostCtx」
@@ -377,8 +463,11 @@ fn exec_component(
         Ok(envelope(resp.ok, resp.value, resp.error))
     })();
 
-    // 插件在沙箱里攒的日志要带回去（打印在 run 里，调用方不用管）
-    (out, std::mem::take(&mut store.data_mut().logs))
+    // 插件在沙箱里攒的日志要带回去（打印在 run 里，调用方不用管）；
+    // denied 也要带回去——有越权就让整次调用失败，别让插件把半成品当结果
+    let logs = std::mem::take(&mut store.data_mut().logs);
+    let denied = std::mem::take(&mut store.data_mut().denied);
+    (out, logs, denied)
 }
 
 /// 统一成 v1 的 JSON 信封，前端不用分两代
@@ -406,17 +495,12 @@ fn exec_core(
     engine: &wasmtime::Engine,
     module: &wasmtime::Module,
     input: &str,
-) -> (Result<String, String>, Vec<String>) {
+    grant: plugin_perm::Grant,
+) -> (Result<String, String>, Vec<String>, Vec<String>) {
     use wasmtime::{Caller, Extern, Linker, Store};
 
     // v1 只有 log / now_ms 两个导入，用不上 settings
-    let mut store: Store<HostCtx> = Store::new(
-        engine,
-        HostCtx {
-            logs: Vec::new(),
-            settings: Vec::new(),
-        },
-    );
+    let mut store: Store<HostCtx> = Store::new(engine, HostCtx::new(grant, Vec::new()));
     let mut linker: Linker<HostCtx> = Linker::new(engine);
 
     let out = (|| -> Result<String, String> {
@@ -425,6 +509,9 @@ fn exec_core(
                 "xnote",
                 "log",
                 |mut caller: Caller<'_, HostCtx>, level: i32, ptr: i32, len: i32| {
+                    if !caller.data_mut().allow(plugin_perm::LOG) {
+                        return;
+                    }
                     let text = {
                         let Some(Extern::Memory(mem)) = caller.get_export("memory") else {
                             return;
@@ -441,7 +528,10 @@ fn exec_core(
             .map_err(|e| format!("注册 xnote.log 失败：{e}"))?;
 
         linker
-            .func_wrap("xnote", "now_ms", || -> i64 {
+            .func_wrap("xnote", "now_ms", |mut caller: Caller<'_, HostCtx>| -> i64 {
+                if !caller.data_mut().allow(plugin_perm::NOW_MS) {
+                    return 0;
+                }
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
@@ -502,7 +592,9 @@ fn exec_core(
             .map_err(|e| format!("插件返回的不是 UTF-8：{e}"))
     })();
 
-    (out, std::mem::take(&mut store.data_mut().logs))
+    let logs = std::mem::take(&mut store.data_mut().logs);
+    let denied = std::mem::take(&mut store.data_mut().denied);
+    (out, logs, denied)
 }
 
 // ---------------- Tauri 命令 ----------------
@@ -579,6 +671,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// v1 插件没声明 log 却调用了：整次运行报错，并指出缺哪个能力
+    #[test]
+    fn v1_module_needs_declared_permission() {
+        let wat = r#"(module
+             (import "xnote" "log" (func $log (param i32 i32 i32)))
+             (memory (export "memory") 1)
+             (data (i32.const 1024) "{}")
+             (func (export "alloc") (param i32) (result i32) i32.const 2048)
+             (func (export "run") (param i32 i32) (result i32)
+               (call $log (i32.const 0) (i32.const 1024) (i32.const 2))
+               (i32.const 1024))
+             (func (export "result_len") (result i32) i32.const 2))"#;
+        let wasm = wat::parse_str(wat).unwrap();
+
+        let stingy = r#"{"id":"mute","name":"不给日志","version":"0.1.0","abi":1,"permissions":[]}"#;
+        let (root, pdir) = temp_plugin_root("v1-deny", "mute", stingy, &wasm);
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        let err = host.run("mute", "{}").unwrap_err();
+        assert!(err.contains("log"), "{err}");
+        assert!(err.contains("permissions"), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let allowed = r#"{"id":"mute","name":"给日志","version":"0.1.0","abi":1,"permissions":["log"]}"#;
+        let (root, pdir) = temp_plugin_root("v1-allow", "mute", allowed, &wasm);
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        assert_eq!(host.run("mute", "{}").unwrap(), "{}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// v2：同一个组件，清单里不写 permissions 就调不动 host
+    #[test]
+    fn component_runs_only_with_declared_permissions() {
+        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/csv-viewer/plugin.wasm");
+        if !src.is_file() {
+            eprintln!("跳过：先跑 plugins/csv-viewer/build.sh");
+            return;
+        }
+        let wasm = std::fs::read(&src).unwrap();
+        let manifest = r#"{"id":"stingy","name":"什么都不给","version":"0.1.0","abi":2,"permissions":[]}"#;
+        let (root, pdir) = temp_plugin_root("v2-deny", "stingy", manifest, &wasm);
+
+        let host = PluginHost::new(vec![root.clone()], pdir.join("no-settings.json"));
+        let info = &host.list()[0];
+        assert!(info.permissions.is_empty());
+        let err = host
+            .run("stingy", r#"{"action":"render","content":"a,b\n1,2\n"}"#)
+            .unwrap_err();
+        assert!(err.contains("log"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// v2：跑仓库里的示例插件（组件）。样例没编译时不算失败，只是跳过
     #[test]
     fn runs_component_example() {
@@ -590,6 +734,7 @@ mod tests {
         let host = PluginHost::new(vec![root.clone()], root.join("no-settings.json"));
         let info = &host.list()[0];
         assert_eq!(info.abi, plugin_abi::ABI_COMPONENT);
+        assert_eq!(info.permissions, ["log", "read-setting"]);
 
         let input = r#"{"action":"render","path":"/tmp/a.csv","content":"a,b\n1,2\n"}"#;
         let out = host.run("csv-viewer", input).unwrap();

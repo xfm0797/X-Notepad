@@ -11,6 +11,7 @@ mod markdown;
 mod market;
 mod meta;
 mod plugin_abi;
+mod plugin_perm;
 mod plugins;
 mod replace_plan;
 mod search;
@@ -112,6 +113,7 @@ pub fn run() {
             market::market_fetch,
             market::plugin_install,
             market::plugin_install_zip,
+            market::plugin_peek_zip,
             market::plugin_uninstall,
             market::plugin_dir,
         ])
