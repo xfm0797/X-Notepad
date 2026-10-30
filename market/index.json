@@ -1,15 +1,16 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-29",
+  "updatedAt": "2026-10-30",
   "plugins": [
     {
       "id": "csv-viewer",
       "name": "CSV 查看器",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": "XFM",
       "description": "把 CSV / TSV 渲染成对齐的文本表格（ABI v2 组件的最小示例）",
       "extensions": [".csv", ".tsv"],
       "abi": 2,
+      "permissions": ["log", "read-setting"],
       "url": "https://github.com/xfm0797/X-Notepad/releases/latest/download/csv-viewer.zip",
       "homepage": "https://github.com/xfm0797/X-Notepad/tree/main/plugins/csv-viewer"
     }
