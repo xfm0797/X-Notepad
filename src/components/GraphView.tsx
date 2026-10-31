@@ -45,6 +45,8 @@ export function GraphView() {
   const [onlyIsolated, setOnlyIsolated] = useState(false)
   /** 按主标签聚簇：把同一类笔记收成一团 */
   const [cluster, setCluster] = useState(false)
+  /** 只画某个目录的子树：空串 = 全部 */
+  const [subtree, setSubtree] = useState('')
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState('')
   const [hover, setHover] = useState<string | null>(null)
@@ -75,33 +77,37 @@ export function GraphView() {
     : ''
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const built = useMemo(() => fg.buildGraph(graph, active, { ghosts }), [graph, activeSig, ghosts])
+  // 子树视图：先建全图再筛，边两端都在子树里才留，截掉的数量报在 stats.outside
+  const scoped = useMemo(() => fg.filterSubtree(built, subtree || null), [built, subtree])
   const layout = useMemo(
-    () => fg.layoutGraph(built.nodes, built.edges, { width: W, height: H, seed, cluster }),
-    [built, seed, cluster]
+    () => fg.layoutGraph(scoped.nodes, scoped.edges, { width: W, height: H, seed, cluster }),
+    [scoped, seed, cluster]
   )
 
   const tags = useMemo(() => {
     const set = new Set<string>()
-    for (const n of built.nodes) for (const t of n.tags) set.add(t)
+    for (const n of scoped.nodes) for (const t of n.tags) set.add(t)
     return Array.from(set).sort((a, b) => a.localeCompare(b))
-  }, [built.nodes])
+  }, [scoped.nodes])
 
   const clusters = useMemo(
-    () => (cluster ? fg.clustersOf(built.nodes, layout.pos) : []),
-    [cluster, built.nodes, layout.pos]
+    () => (cluster ? fg.clustersOf(scoped.nodes, layout.pos) : []),
+    [cluster, scoped.nodes, layout.pos]
   )
-  const matched = useMemo(() => fg.matchNodes(built.nodes, query), [built.nodes, query])
+  const matched = useMemo(() => fg.matchNodes(scoped.nodes, query), [scoped.nodes, query])
   const tagMatched = useMemo(() => {
     if (!tag) return null
     const want = tag.toLowerCase()
-    return new Set(built.nodes.filter(n => n.tags.some(t => t.toLowerCase() === want)).map(n => n.id))
-  }, [built.nodes, tag])
+    return new Set(
+      scoped.nodes.filter(n => n.tags.some(t => t.toLowerCase() === want)).map(n => n.id)
+    )
+  }, [scoped.nodes, tag])
 
   const focus = useMemo(() => {
-    if (hover) return fg.neighborsOf(built.edges, hover)
-    if (activePath) return fg.neighborsOf(built.edges, activePath)
+    if (hover) return fg.neighborsOf(scoped.edges, hover)
+    if (activePath) return fg.neighborsOf(scoped.edges, activePath)
     return null
-  }, [hover, activePath, built.edges])
+  }, [hover, activePath, scoped.edges])
 
   // 结构变了就丢掉手动拖出来的偏移，重新布局也重置
   useEffect(() => {
@@ -200,7 +206,7 @@ export function GraphView() {
     const drag = dragRef.current
     dragRef.current = null
     if (!drag || drag.moved) return
-    const node = built.nodes.find(n => n.id === drag.id)
+    const node = scoped.nodes.find(n => n.id === drag.id)
     if (!node) return
     if (node.ghost) {
       // 断链点一下就问「要不要建这篇」，跟双链面板的行为一致。
@@ -213,17 +219,19 @@ export function GraphView() {
     toggleGraph()
   }
 
-  const stats = built.stats
+  const stats = scoped.stats
   const degreeOf = useMemo(() => {
     const m = new Map<string, number>()
-    for (const n of built.nodes) m.set(n.id, n.degree)
+    for (const n of scoped.nodes) m.set(n.id, n.degree)
     return m
-  }, [built.nodes])
+  }, [scoped.nodes])
   const dirs = useMemo(() => {
     const seen: string[] = []
-    for (const n of built.nodes) if (!seen.includes(n.dir)) seen.push(n.dir)
+    for (const n of scoped.nodes) if (!seen.includes(n.dir)) seen.push(n.dir)
     return seen.slice(0, 6)
-  }, [built.nodes])
+  }, [scoped.nodes])
+  // 目录下拉列全图的目录（不随筛选缩水），选完才知道怎么切回去
+  const dirOptions = useMemo(() => fg.subtreeDirs(built.nodes), [built.nodes])
 
   const dim = (id: string) => {
     if (matched.size && !matched.has(id)) return true
@@ -241,8 +249,16 @@ export function GraphView() {
         <div className="graph-title">
           知识图谱
           <span className="graph-sub">
-            {graphBusy ? '扫描中…' : `${stats.notes} 篇 · ${stats.edges} 条链接 · ${stats.isolated} 篇孤立`}
+            {graphBusy
+              ? '扫描中…'
+              : `${stats.notes} 篇 · ${stats.edges} 条链接 · ${stats.isolated} 篇孤立`}
             {stats.broken > 0 && <b className="graph-broken"> · {stats.broken} 处断链</b>}
+            {stats.outside > 0 && (
+              <span title="这些链接的另一端在所选目录之外，子树视图里不画">
+                {' '}
+                · 子树外 {stats.outside} 条
+              </span>
+            )}
           </span>
         </div>
         <div className="graph-tools">
@@ -252,6 +268,19 @@ export function GraphView() {
             placeholder="找笔记 / 标签…"
             onChange={e => setQuery(e.target.value)}
           />
+          <select
+            className="graph-select"
+            value={subtree}
+            onChange={e => setSubtree(e.target.value)}
+            title="只画这个目录（含子目录）里的笔记"
+          >
+            <option value="">全部目录</option>
+            {dirOptions.map(d => (
+              <option key={d} value={d}>
+                {d === fg.ROOT_DIR ? '根目录' : `${d}/`}
+              </option>
+            ))}
+          </select>
           <select className="graph-select" value={tag} onChange={e => setTag(e.target.value)}>
             <option value="">全部标签</option>
             {tags.map(t => (
@@ -322,7 +351,7 @@ export function GraphView() {
                 </g>
               )
             })}
-            {built.edges.map(e => {
+            {scoped.edges.map(e => {
               const a = offsets[e.source] ?? layout.pos[e.source]
               const b = offsets[e.target] ?? layout.pos[e.target]
               if (!a || !b) return null
@@ -340,7 +369,7 @@ export function GraphView() {
                 />
               )
             })}
-            {built.nodes.map(node => {
+            {scoped.nodes.map(node => {
               const p = offsets[node.id] ?? layout.pos[node.id]
               if (!p) return null
               const faded = dim(node.id)
@@ -393,12 +422,15 @@ export function GraphView() {
           )}
         </div>
 
-        {built.nodes.length === 0 && (
-          <div className="graph-empty">这个工作区还没有 Markdown 笔记。写一篇，再用 [[双链]] 连起来。</div>
+        {scoped.nodes.length === 0 && (
+          <div className="graph-empty">
+            {subtree ? `「${subtree}」里还没有笔记。换个目录，或写一篇再连起来。` : '这个工作区还没有 Markdown 笔记。写一篇，再用 [[双链]] 连起来。'}
+          </div>
         )}
         <div className="graph-hint">
           拖动空白处平移 · 滚轮缩放 · 拖动圆点摆位置 · 点圆点打开笔记
           {cluster ? ' · 同一主标签的笔记已成簇，改 front-matter 里标签的顺序就换簇' : ''}
+          {subtree ? ` · 只画「${subtree}」子树，跨出边界的链接没画` : ''}
         </div>
       </div>
     </div>

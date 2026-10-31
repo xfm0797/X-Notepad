@@ -59,6 +59,11 @@ export interface GraphStats {
   broken: number
   /** 指向自己的链接，画出来是个圈，直接跳过 */
   selfLinks: number
+  /**
+   * 开了目录子树才有意义：一端在子树里、另一端在外面的边数。
+   * 这些边不画，但要报个数——不然子树里看着没链接，其实是被截掉了。
+   */
+  outside: number
 }
 
 export interface BuiltGraph {
@@ -184,7 +189,8 @@ export function buildGraph(
     edges: edges.size,
     isolated: list.filter(n => !n.ghost && n.degree === 0).length,
     broken,
-    selfLinks
+    selfLinks,
+    outside: 0
   }
   return { nodes: list, edges: Array.from(edges.values()), stats }
 }
@@ -465,6 +471,84 @@ export function layoutGraph(
     }
   }
   return { pos, width, height }
+}
+
+/* ------------------------------------------------------------------ */
+/* 目录子树                                                             */
+/* ------------------------------------------------------------------ */
+
+/** 根目录文件在图例里的名字（来自 dirgroup.relativeDir，这里要保持一致） */
+export const ROOT_DIR = '根目录'
+
+/**
+ * 一个目录是否落在子树里。dir 用图例同款的名字（根目录是「根目录」），
+ * root 为空 = 不筛。
+ *
+ * 前缀必须整段匹配：`notes` 不能吃掉 `notes-x`，否则关掉一个目录
+ * 会顺手把隔壁目录也关了。
+ */
+export function inSubtree(dir: string, root: string | null): boolean {
+  if (!root) return true
+  return dir === root || dir.startsWith(`${root}/`)
+}
+
+/**
+ * 只画某个目录的子树：节点按目录（含子目录）筛，边只留**两端都在子树里**的。
+ *
+ * 一端在里面的边不画，但数量记进 `stats.outside`——这是子树视图和
+ * 「变淡」的本质区别：变淡还能看到线，截掉就什么都看不到了，得报个数。
+ *
+ * 幽灵节点跟着边走：只要还有一条留下的边指着它就保留，否则摘掉
+ * （它没有目录可言，跟着来源笔记走才对）。
+ */
+export function filterSubtree(built: BuiltGraph, dir: string | null): BuiltGraph {
+  if (!dir) return built
+  const kept = built.nodes.filter(n => n.ghost || inSubtree(n.dir, dir))
+  const ids = new Set(kept.map(n => n.id))
+  const edges = built.edges.filter(e => ids.has(e.source) && ids.has(e.target))
+  const outside = built.edges.length - edges.length
+
+  const linked = new Set<string>()
+  const degree = new Map<string, number>()
+  for (const e of edges) {
+    linked.add(e.source)
+    linked.add(e.target)
+    degree.set(e.source, (degree.get(e.source) ?? 0) + 1)
+    degree.set(e.target, (degree.get(e.target) ?? 0) + 1)
+  }
+  const nodes = kept.filter(n => !n.ghost || linked.has(n.id)).map(n => ({
+    ...n,
+    degree: degree.get(n.id) ?? 0
+  }))
+
+  return {
+    nodes,
+    edges,
+    stats: {
+      notes: nodes.filter(n => !n.ghost).length,
+      skipped: built.stats.skipped,
+      ghosts: nodes.filter(n => n.ghost).length,
+      edges: edges.length,
+      isolated: nodes.filter(n => !n.ghost && (degree.get(n.id) ?? 0) === 0).length,
+      // 全图那边 broken 按链接出现次数算；这里手里只有边，按边算
+      broken: edges.filter(e => e.broken).length,
+      selfLinks: built.stats.selfLinks,
+      outside
+    }
+  }
+}
+
+/** 目录下拉的选项：只数真笔记（幽灵不算），名字序，根目录排最前 */
+export function subtreeDirs(nodes: VNode[]): string[] {
+  const set = new Set<string>()
+  for (const n of nodes) if (!n.ghost) set.add(n.dir)
+  const list = Array.from(set).sort((a, b) => a.localeCompare(b))
+  const i = list.indexOf(ROOT_DIR)
+  if (i > 0) {
+    list.splice(i, 1)
+    list.unshift(ROOT_DIR)
+  }
+  return list
 }
 
 /* ------------------------------------------------------------------ */
