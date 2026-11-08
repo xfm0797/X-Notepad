@@ -133,7 +133,8 @@ interface WorkspaceState {
   /** silent=true 时不改状态栏提示（自动建索引时用） */
   rebuildIndex: (silent?: boolean) => Promise<void>
   refreshIndexStatus: () => Promise<void>
-  openHit: (hit: search.SearchHit) => Promise<void>
+  /** 跳到某处命中：只要有路径和行列就够，键盘导航时不用凑一整个 SearchHit */
+  openHit: (hit: Pick<search.SearchHit, 'path' | 'line' | 'column'>) => Promise<void>
   /** 从磁盘重新读回若干文件（替换 / 外部改动之后用） */
   reloadMany: (paths: string[]) => Promise<void>
 

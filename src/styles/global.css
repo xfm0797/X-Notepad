@@ -1720,6 +1720,30 @@ kbd {
   color: var(--text-dim);
 }
 
+/* 键盘导航：页脚报当前选中的位置，行内高亮跟着走 */
+.search-nav-tip {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.search-foot-meta {
+  opacity: 0.8;
+}
+
+.search-span.sel,
+.search-span.sel:hover {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--text);
+}
+
+.search-hit.sel {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 /* ============ 知识图谱 ============ */
 .graph-overlay {
   position: fixed;

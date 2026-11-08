@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { groupHits } from '../lib/dirgroup'
 import { foldSpans } from '../lib/search'
+import { navKey, navLabel, navPositions, stepIndex } from '../lib/searchnav'
 import { useWorkspace } from '../store/workspace'
 
 function stamp(secs: number): string {
@@ -36,8 +37,11 @@ export function SearchPanel() {
   const openHit = useWorkspace(s => s.openHit)
   const rebuild = useWorkspace(s => s.rebuildIndex)
   const inputRef = useRef<HTMLInputElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
   const [replaceOpen, setReplaceOpen] = useState(false)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  /** 键盘选中的位置下标；-1 = 还没选 */
+  const [sel, setSel] = useState(-1)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -61,8 +65,73 @@ export function SearchPanel() {
   const groups = useMemo(() => groupHits(hits, root), [hits, root])
   const toggleGroup = (dir: string) => setCollapsed(c => ({ ...c, [dir]: !c[dir] }))
 
+  /** 摊平后的位置列表，顺序与渲染一致 */
+  const positions = useMemo(() => navPositions(hits), [hits])
+  const indexByKey = useMemo(() => {
+    const m = new Map<string, number>()
+    positions.forEach((p, i) => m.set(p.key, i))
+    return m
+  }, [positions])
+
+  // 换了一次搜索就从头开始，别让旧下标指到新结果里的另一处
+  useEffect(() => {
+    setSel(-1)
+  }, [hits])
+
+  // 选中项滚进视野；jsdom 没有 scrollIntoView，忽略即可
+  useEffect(() => {
+    if (sel < 0) return
+    const el = panelRef.current?.querySelector(`[data-nav="${sel}"]`) as HTMLElement | null
+    el?.scrollIntoView?.({ block: 'nearest' })
+  }, [sel])
+
+  /**
+   * ↑↓ 在命中位置之间走，Enter 跳过去，Home/End 到首尾。
+   *
+   * 只在搜索抽屉里有反应：焦点在编辑器里时按方向键不该动这里。
+   * 输入框里也接管 ↑↓（搜索框的方向键本来也没别的用处），
+   * 但 Home/End 留给光标——正在改关键词时按 End 得跳到行尾。
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return
+      const target = e.target as Node | null
+      const inside =
+        !target ||
+        target === document.body ||
+        target === (window as unknown as Node) ||
+        !!panelRef.current?.contains(target)
+      if (!inside) return
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (!positions.length) return
+        e.preventDefault()
+        e.stopPropagation()
+        setSel(s => stepIndex(s, e.key === 'ArrowDown' ? 1 : -1, positions.length))
+        return
+      }
+      if (e.key === 'Enter' && sel >= 0) {
+        const pos = positions[sel]
+        if (!pos) return
+        e.preventDefault()
+        e.stopPropagation()
+        void openHit(pos)
+        return
+      }
+      if ((e.key === 'Home' || e.key === 'End') && positions.length) {
+        const tag = (target as HTMLElement | null)?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return
+        e.preventDefault()
+        e.stopPropagation()
+        setSel(e.key === 'Home' ? 0 : positions.length - 1)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [positions, sel, openHit])
+
   return (
-    <aside className="search-panel">
+    <aside className="search-panel" ref={panelRef}>
       <header className="search-head">
         <span className="search-title">全文搜索{regex ? '（正则）' : ''}</span>
         <button className="icon-btn" onClick={toggleSearch} title="关闭 (Esc)">
@@ -184,10 +253,14 @@ export function SearchPanel() {
               </button>
 
               {!isCollapsed &&
-                group.hits.map(hit => (
+                group.hits.map(hit => {
+                  // 有逐行上下文时，键盘位置落在每一行上；否则整个文件就是一处
+                  const fileNav = hit.spans.length ? undefined : indexByKey.get(navKey(hit.path, hit.line))
+                  return (
                   <div className="search-hit-wrap" key={hit.path}>
                     <button
-                      className="search-hit"
+                      className={`search-hit${fileNav !== undefined && sel === fileNav ? ' sel' : ''}`}
+                      data-nav={fileNav}
                       title={hit.path}
                       onClick={() => void openHit(hit)}
                     >
@@ -222,14 +295,17 @@ export function SearchPanel() {
                                 第 {block.from}–{block.to} 行 · {block.hits} 处命中
                               </div>
                             )}
-                            {block.spans.map(span => (
+                            {block.spans.map(span => {
+                              const nav = span.hit ? indexByKey.get(navKey(hit.path, span.line)) : undefined
+                              return (
                               <button
                                 key={span.line}
                                 // 中间补的上下文行没高亮，样式压暗，跟命中行区分开
-                                className={`search-span${span.hit ? '' : ' context'}`}
+                                className={`search-span${span.hit ? '' : ' context'}${nav !== undefined && sel === nav ? ' sel' : ''}`}
+                                data-nav={nav}
                                 title={`跳到第 ${span.line} 行`}
                                 onClick={() =>
-                                  void openHit({ ...hit, line: span.line, column: span.column })
+                                  void openHit({ path: hit.path, line: span.line, column: span.column })
                                 }
                               >
                                 <span className="search-span-no">{span.line}</span>
@@ -243,7 +319,8 @@ export function SearchPanel() {
                                   )}
                                 </span>
                               </button>
-                            ))}
+                              )
+                            })}
                           </div>
                         ))}
                         {hit.spanTotal > hit.spans.filter(s => s.hit).length && (
@@ -254,16 +331,26 @@ export function SearchPanel() {
                       </div>
                     )}
                   </div>
-                ))}
+                  )
+                })}
             </div>
           )
         })}
       </div>
 
       <footer className="search-foot">
-        {status ? `索引 ${status.files} 个文件 · ${stamp(status.builtAt)}` : '索引状态未知'}
-        {root ? '' : ' · 先打开一个文件夹'}
-        {regex ? ' · 正则模式扫索引正文，不走分词' : ''}
+        {positions.length > 0 && (
+          <span className="search-nav-tip" title={sel >= 0 ? positions[sel]?.path : '↑↓ 在命中行之间移动'}>
+            {sel >= 0 && positions[sel]
+              ? navLabel(positions[sel], sel, positions.length)
+              : '↑↓ 选位置 · Enter 跳过去'}
+          </span>
+        )}
+        <span className="search-foot-meta">
+          {status ? `索引 ${status.files} 个文件 · ${stamp(status.builtAt)}` : '索引状态未知'}
+          {root ? '' : ' · 先打开一个文件夹'}
+          {regex ? ' · 正则模式扫索引正文，不走分词' : ''}
+        </span>
       </footer>
     </aside>
   )
